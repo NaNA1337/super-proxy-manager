@@ -4,9 +4,15 @@ bin/
 # Frontend dependencies and temp build
 frontend/node_modules/
 frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+test-results/
+playwright-report/
 
 # Logs and local artifacts
 *.log
+*.sqlite*
 .DS_Store
 .idea/
 .vscode/
+

@@ -15,6 +15,42 @@ export const Settings: React.FC = () => {
   const [settings, setSettings] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Password update state
+  const [currentPwd, setCurrentPwd] = useState('');
+  const [newPwd, setNewPwd] = useState('');
+  const [confirmPwd, setConfirmPwd] = useState('');
+  const [pwdError, setPwdError] = useState<string | null>(null);
+  const [pwdSuccess, setPwdSuccess] = useState<string | null>(null);
+  const [pwdLoading, setPwdLoading] = useState(false);
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwdError(null);
+    setPwdSuccess(null);
+
+    if (newPwd.length < 12) {
+      setPwdError('New password must be at least 12 characters.');
+      return;
+    }
+    if (newPwd !== confirmPwd) {
+      setPwdError('New password and confirmation do not match.');
+      return;
+    }
+
+    setPwdLoading(true);
+    try {
+      await api.changePassword(currentPwd, newPwd, confirmPwd);
+      setPwdSuccess('Administrator password updated successfully!');
+      setCurrentPwd('');
+      setNewPwd('');
+      setConfirmPwd('');
+    } catch (err: any) {
+      setPwdError(err.safeMessage || err.message || 'Failed to update password');
+    } finally {
+      setPwdLoading(false);
+    }
+  };
+
   const fetchSettings = async () => {
     try {
       const data = await api.getSettings();
@@ -73,6 +109,68 @@ export const Settings: React.FC = () => {
         <span className="px-2 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800 text-[10px] font-bold">
           HARDENED
         </span>
+      </div>
+
+      {/* Password Management */}
+      <div className="glass-panel p-5 rounded-xl border border-slate-800 font-mono text-xs space-y-4">
+        <div className="flex items-center gap-2 text-white font-bold pb-2 border-b border-slate-800">
+          <Lock className="w-4 h-4 text-amber-400" />
+          <span>ADMINISTRATOR PASSWORD MANAGEMENT</span>
+        </div>
+        {pwdSuccess && (
+          <div className="p-3 rounded-lg bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 text-xs">
+            {pwdSuccess}
+          </div>
+        )}
+        {pwdError && (
+          <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-800/60 text-rose-300 text-xs">
+            {pwdError}
+          </div>
+        )}
+        <form onSubmit={handleChangePassword} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <label className="block text-[11px] text-slate-400 uppercase mb-1">Current Password</label>
+            <input
+              type="password"
+              required
+              placeholder="Current password"
+              value={currentPwd}
+              onChange={(e) => setCurrentPwd(e.target.value)}
+              className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-500"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] text-slate-400 uppercase mb-1">New Password (12+ chars)</label>
+            <input
+              type="password"
+              required
+              placeholder="New password"
+              value={newPwd}
+              onChange={(e) => setNewPwd(e.target.value)}
+              className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-500"
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] text-slate-400 uppercase mb-1">Confirm New Password</label>
+            <div className="flex gap-2">
+              <input
+                type="password"
+                required
+                placeholder="Confirm new password"
+                value={confirmPwd}
+                onChange={(e) => setConfirmPwd(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-500"
+              />
+              <button
+                type="submit"
+                disabled={pwdLoading}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-lg transition disabled:opacity-50 whitespace-nowrap"
+              >
+                {pwdLoading ? 'Saving...' : 'Update'}
+              </button>
+            </div>
+          </div>
+        </form>
       </div>
 
       {/* Settings Grid */}

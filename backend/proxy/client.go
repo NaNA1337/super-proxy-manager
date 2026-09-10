@@ -173,13 +173,6 @@ func NewClientWithFingerprint(baseURL, apiKey, pinnedFingerprint string) *Daemon
 	}
 }
 
-func (c *DaemonClient) SetAPIKey(key string) {
-	c.apiKey = key
-}
-
-func (c *DaemonClient) SetBaseURL(u string) {
-	c.baseURL = u
-}
 
 func (c *DaemonClient) doRequest(method, path string, body interface{}) ([]byte, int, error) {
 	var bodyReader io.Reader

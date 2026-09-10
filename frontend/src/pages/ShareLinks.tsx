@@ -24,7 +24,12 @@ import { Host, NodeClientConfig, CanonicalProfile } from '../types';
 import { QRCodeModal } from '../components/QRCodeModal';
 import { api, getSelectedHostID, setSelectedHostID } from '../api/client';
 
-export const ShareLinks: React.FC = () => {
+interface ShareLinksProps {
+  selectedHostID?: string;
+  onSelectHost?: (hostID: string) => void;
+}
+
+export const ShareLinks: React.FC<ShareLinksProps> = ({ selectedHostID, onSelectHost }) => {
   const [hosts, setHosts] = useState<Host[]>([]);
   const [selectedHost, setSelectedHost] = useState<Host | null>(null);
   const [nodes, setNodes] = useState<{ id: string; ip: string; country: string }[]>([]);
@@ -76,6 +81,15 @@ export const ShareLinks: React.FC = () => {
   useEffect(() => {
     loadHosts();
   }, []);
+
+  useEffect(() => {
+    if (selectedHostID && hosts.length > 0) {
+      const found = hosts.find((h) => h.id === selectedHostID);
+      if (found && found.id !== selectedHost?.id) {
+        setSelectedHost(found);
+      }
+    }
+  }, [selectedHostID, hosts]);
 
   // When selected host changes, fetch its node list from daemon
   useEffect(() => {

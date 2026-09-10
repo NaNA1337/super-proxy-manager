@@ -148,19 +148,51 @@ manager.yourdomain.com {
 
 ---
 
-## Testing
+## Testing & Quality Assurance
 
-Run unit tests, property tests, and the race detector:
+### 1. Backend Unit, Integration & Race Matrix
 
 ```bash
+# Run all backend tests with thread-safety and race detection
 go test -count=1 -race ./...
 ```
 
-Frontend production build check:
+### 2. Frontend Build & Type Validation
 
 ```bash
-cd frontend && npm run build
+cd frontend
+npm ci
+npm run typecheck
+npm run build
 ```
+
+### 3. Web UI Browser E2E Matrix (Playwright)
+
+True End-to-End browser tests execute real Chromium browser sessions against a live compiled Manager binary, ephemeral SQLite instance, and mock daemon clusters:
+
+```bash
+# First-time setup: install Playwright browser binaries and OS dependencies
+cd frontend
+npx playwright install chromium --with-deps
+
+# Build server binary for E2E
+cd .. && go build -o bin/super-proxy-web ./backend/cmd/server
+
+# Execute full Browser E2E suite
+cd frontend && npm run test:e2e
+```
+
+The E2E suite verifies:
+- `E2E-01`: First boot, temporary bootstrap password generation, forced password change, session persistence, unauthorized page blocks.
+- `E2E-02`: Authentication lifecycle, session revocation on logout, browser history & refresh protection, CSRF token defense.
+- `E2E-03`: Multi-host fleet view, dynamic host switching, strict data isolation, host persistence across reloads.
+- `E2E-04`: Canonical client config center (VLESS, Clash Meta, sing-box, Xray Core, Subscription URI), copy to clipboard, file downloads, QR code canvas rendering, zero manual Reality parameter inputs.
+- `E2E-05`: Runtime fail-closed state, stale cache purging, zero fallback SOCKS endpoints, automated runtime recovery.
+- `E2E-06`: Multi-host batch ZIP export, directory layout (`Host/Node/`), path traversal defense, zero secret leakage.
+- `E2E-07`: Settings architecture inspection, admin password rotation, credential invalidation.
+- `E2E-08`: Host management 3-step wizard, live reachability testing, failed connection handling (zero credential leak), host deletion.
+- `E2E-09`: Comprehensive SSRF defense matrix (loopback, RFC1918, link-local cloud metadata, CGNAT, IPv4-mapped IPv6, schemes).
+- `E2E-10`: TLS certificate fingerprint pinning and browser secret isolation audit.
 
 ---
 

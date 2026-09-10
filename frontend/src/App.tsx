@@ -169,7 +169,7 @@ export const App: React.FC = () => {
             {currentTab === 'routing' && <Routing />}
             {currentTab === 'metrics' && <Metrics />}
             {currentTab === 'events' && <Events />}
-            {currentTab === 'share-links' && <ShareLinks />}
+            {currentTab === 'share-links' && <ShareLinks selectedHostID={selectedHostID} onSelectHost={handleSelectHost} />}
             {currentTab === 'subscriptions' && <Subscriptions isAdmin={isAdmin} />}
             {currentTab === 'settings' && <Settings />}
             {currentTab === 'audit' && <Audit />}
