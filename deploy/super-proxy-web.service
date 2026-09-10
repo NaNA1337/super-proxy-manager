@@ -1,13 +1,13 @@
 [Unit]
 Description=Super-Proxy Web Manager & Control Panel
-After=network.target super-proxy.service
-Wants=super-proxy.service
+After=network.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/super-proxy-manager
-ExecStart=/root/super-proxy-manager/bin/super-proxy-web -host 127.0.0.1 -port 8443
+WorkingDirectory=/var/lib/super-proxy-manager
+ExecStart=/usr/local/bin/super-proxy-web -host 127.0.0.1 -port 8443 -data-dir /var/lib/super-proxy-manager/data
 Restart=always
 RestartSec=5s
 
@@ -17,11 +17,11 @@ ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=true
 
-# Environment Configuration
-Environment="AGENT_API_URL=https://127.0.0.1:60000"
-Environment="PORT=8443"
-# Environment="XRAY_MANAGER_API_KEY=your-api-key"
-# Environment="WEB_ADMIN_PASSWORD=your-secure-admin-password"
+# Environment Configuration (Optional)
+# Environment="HOST=127.0.0.1"
+# Environment="PORT=8443"
+# Environment="DATA_DIR=/var/lib/super-proxy-manager/data"
+# Environment="MANAGER_MASTER_KEY=your-32-byte-hex-aes-gcm-master-key"
 
 [Install]
 WantedBy=multi-user.target
