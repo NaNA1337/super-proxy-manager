@@ -1,0 +1,24 @@
+# Example Caddy configuration for Super-Proxy Web Manager
+# Place in /etc/caddy/Caddyfile or include in existing Caddy configuration.
+
+manager.example.com {
+    # Automatic TLS certificate via Let's Encrypt / ZeroSSL
+    tls admin@example.com
+
+    # Reverse proxy to local Web Manager
+    reverse_proxy 127.0.0.1:8443 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto https
+    }
+
+    # Redacted logging for public subscription endpoints
+    log {
+        output file /var/log/caddy/manager.access.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+        format console
+    }
+}
