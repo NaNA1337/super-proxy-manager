@@ -26,41 +26,87 @@ func setupHostTestDB(t *testing.T) (*db.DB, func()) {
 }
 
 func TestSSRFValidation(t *testing.T) {
-	// Permitted
-	if err := ValidateAgentURL("https://127.0.0.1:60000"); err != nil {
-		t.Errorf("Expected 127.0.0.1:60000 to be valid, got: %v", err)
+	// Ensure strict mode (no private hosts allowed)
+	_ = os.Unsetenv("ALLOW_PRIVATE_HOSTS")
+	_ = os.Unsetenv("SPM_ALLOW_PRIVATE_HOSTS")
+
+	// Permitted public endpoints
+	validURLs := []string{
+		"https://node01.example.com:60000",
+		"https://jp-proxy.superproxy.io:443",
+		"http://93.184.216.34:8080",
 	}
-	if err := ValidateAgentURL("http://localhost:8080"); err != nil {
-		t.Errorf("Expected localhost:8080 to be valid, got: %v", err)
+	for _, u := range validURLs {
+		if err := ValidateAgentURL(u); err != nil {
+			t.Errorf("Expected %q to be valid, got: %v", u, err)
+		}
 	}
-	if err := ValidateAgentURL("https://node01.example.com:60000"); err != nil {
-		t.Errorf("Expected domain:port to be valid, got: %v", err)
+
+	// Forbidden: Loopback & Localhost
+	loopbackURLs := []string{
+		"https://127.0.0.1:60000",
+		"http://127.0.0.2:8080",
+		"http://localhost:8080",
+		"http://[::1]:8080",
+	}
+	for _, u := range loopbackURLs {
+		if err := ValidateAgentURL(u); err == nil {
+			t.Errorf("Expected loopback %q to be rejected by SSRF policy", u)
+		}
+	}
+
+	// Forbidden: Private RFC1918 & Shared CIDRs
+	privateURLs := []string{
+		"http://10.0.0.1:8080",
+		"http://172.16.0.1:8080",
+		"http://192.168.1.1:8080",
+		"http://169.254.1.1:8080",
+		"http://100.64.0.1:8080",
+		"http://[fc00::1]:8080",
+		"http://[fe80::1]:8080",
+	}
+	for _, u := range privateURLs {
+		if err := ValidateAgentURL(u); err == nil {
+			t.Errorf("Expected private network %q to be rejected by SSRF policy", u)
+		}
+	}
+
+	// Forbidden: Userinfo / embedded credentials
+	if err := ValidateAgentURL("https://user:pass@example.com:60000"); err == nil {
+		t.Errorf("Expected URL with userinfo to be rejected")
 	}
 
 	// Forbidden schemes
-	if err := ValidateAgentURL("file:///etc/passwd"); err == nil {
-		t.Errorf("Expected file:// to be rejected")
+	forbiddenSchemes := []string{
+		"file:///etc/passwd",
+		"gopher://127.0.0.1:70",
+		"ftp://ftp.example.com",
 	}
-	if err := ValidateAgentURL("gopher://127.0.0.1:70"); err == nil {
-		t.Errorf("Expected gopher:// to be rejected")
-	}
-	if err := ValidateAgentURL("ftp://ftp.example.com"); err == nil {
-		t.Errorf("Expected ftp:// to be rejected")
+	for _, u := range forbiddenSchemes {
+		if err := ValidateAgentURL(u); err == nil {
+			t.Errorf("Expected scheme %q to be rejected", u)
+		}
 	}
 
 	// Forbidden cloud metadata
-	if err := ValidateAgentURL("http://169.254.169.254/latest/meta-data/"); err == nil {
-		t.Errorf("Expected link-local metadata IP 169.254.169.254 to be rejected")
+	metadataURLs := []string{
+		"http://169.254.169.254/latest/meta-data/",
+		"http://100.100.100.200/latest/meta-data/",
+		"http://metadata.google.internal/computeMetadata/v1/",
+		"http://instance-data/latest/meta-data",
 	}
-	if err := ValidateAgentURL("http://metadata.google.internal/computeMetadata/v1/"); err == nil {
-		t.Errorf("Expected metadata.google.internal to be rejected")
-	}
-	if err := ValidateAgentURL("http://instance-data/latest/meta-data"); err == nil {
-		t.Errorf("Expected instance-data to be rejected")
+	for _, u := range metadataURLs {
+		if err := ValidateAgentURL(u); err == nil {
+			t.Errorf("Expected metadata endpoint %q to be rejected", u)
+		}
 	}
 }
 
 func TestHostCRUDAndTokenEncryption(t *testing.T) {
+	// Enable private mock server for unit testing
+	_ = os.Setenv("ALLOW_PRIVATE_HOSTS", "true")
+	defer os.Unsetenv("ALLOW_PRIVATE_HOSTS")
+
 	database, cleanup := setupHostTestDB(t)
 	defer cleanup()
 

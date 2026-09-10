@@ -15,7 +15,10 @@ import {
   RoutingOverview,
   Host,
   TestConnectionResult,
-  ClientProfile
+  ClientProfile,
+  AllClientConfigResponse,
+  NodeClientConfig,
+  CanonicalProfile
 } from '../types';
 
 let currentCSRFToken = '';
@@ -233,4 +236,34 @@ export const api = {
   getAuditLogs: () => request<AuditLog[]>('/api/audit'),
   getEvents: () => request<EventItem[]>('/api/events'),
   getSettings: () => request<Record<string, unknown>>('/api/settings'),
+
+  // Canonical Client Config Center
+  getHostClientConfig: (hostID: string, nodeID?: string) => {
+    const path = `/api/hosts/${encodeURIComponent(hostID)}${nodeID ? `/nodes/${encodeURIComponent(nodeID)}` : ''}/client-config`;
+    return request<AllClientConfigResponse>(path);
+  },
+  exportClientConfigsZip: async (selections: { host_id: string; node_id: string }[]): Promise<Blob> => {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/zip',
+    };
+    if (currentCSRFToken) {
+      headers['X-CSRF-Token'] = currentCSRFToken;
+    }
+    const response = await fetch('/api/client-configs/export-zip', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ selections }),
+      credentials: 'same-origin',
+    });
+    if (!response.ok) {
+      throw new Error(`Export failed: ${response.statusText}`);
+    }
+    return await response.blob();
+  },
+  auditClientConfig: (hostID: string, nodeID: string, action: string, profileID: string) =>
+    request<{ status: string }>('/api/client-configs/audit', {
+      method: 'POST',
+      body: JSON.stringify({ host_id: hostID, node_id: nodeID, action, profile_id: profileID }),
+    }),
 };

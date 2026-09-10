@@ -1,6 +1,8 @@
 package server
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -20,14 +22,15 @@ import (
 )
 
 type Server struct {
-	addr         string
-	db           *db.DB
-	hostManager  *host.HostManager
-	shareService *sharelink.Service
-	subStore     *subscription.Store
-	subHandler   *subscription.Handler
-	distFS       fs.FS
-	mux          *http.ServeMux
+	addr              string
+	db                *db.DB
+	hostManager       *host.HostManager
+	shareService      *sharelink.Service
+	subStore          *subscription.Store
+	subHandler        *subscription.Handler
+	clientConfigCache *proxy.ClientConfigCache
+	distFS            fs.FS
+	mux               *http.ServeMux
 }
 
 func NewServer(addr string, database *db.DB, distFS fs.FS) *Server {
@@ -45,14 +48,15 @@ func NewServer(addr string, database *db.DB, distFS fs.FS) *Server {
 	subHandler := subscription.NewHandlerWithProvider(subStore, clientProvider, ss)
 
 	s := &Server{
-		addr:         addr,
-		db:           database,
-		hostManager:  hm,
-		shareService: ss,
-		subStore:     subStore,
-		subHandler:   subHandler,
-		distFS:       distFS,
-		mux:          http.NewServeMux(),
+		addr:              addr,
+		db:                database,
+		hostManager:       hm,
+		shareService:      ss,
+		subStore:          subStore,
+		subHandler:        subHandler,
+		clientConfigCache: proxy.NewClientConfigCache(45 * time.Second),
+		distFS:            distFS,
+		mux:               http.NewServeMux(),
 	}
 
 	s.setupRoutes()
@@ -97,7 +101,9 @@ func (s *Server) setupRoutes() {
 	// Slot switch (Restricted to admin + CSRF enforced + requires specific host)
 	s.mux.HandleFunc("/api/daemon/slots/", s.requireAdminHandler(s.handleDaemonSlotAction))
 
-	// 5. ShareLink Endpoints
+	// 5. ShareLink & Canonical Client Config Endpoints
+	s.mux.HandleFunc("/api/client-configs/export-zip", s.requireAuthHandler(s.handleExportZip))
+	s.mux.HandleFunc("/api/client-configs/audit", s.requireAuthHandler(s.handleClientConfigAudit))
 	s.mux.HandleFunc("/api/sharelinks/protocols", s.requireAuthHandler(s.handleShareProtocols))
 	s.mux.HandleFunc("/api/sharelinks/generate", s.requireAuthHandler(s.handleShareGenerate))
 	s.mux.HandleFunc("/api/sharelinks/batch", s.requireAuthHandler(s.handleShareBatch))
@@ -358,18 +364,19 @@ func (s *Server) handleListHosts(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateHost(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name      string `json:"name"`
-		Address   string `json:"address"`
-		AgentURL  string `json:"agent_url"`
-		Token     string `json:"token"`
-		IsDefault bool   `json:"is_default"`
+		Name           string `json:"name"`
+		Address        string `json:"address"`
+		AgentURL       string `json:"agent_url"`
+		Token          string `json:"token"`
+		TLSFingerprint string `json:"tls_fingerprint"`
+		IsDefault      bool   `json:"is_default"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 
-	created, err := s.hostManager.CreateHost(req.Name, req.Address, req.AgentURL, req.Token, req.IsDefault)
+	created, err := s.hostManager.CreateHostWithFingerprint(req.Name, req.Address, req.AgentURL, req.Token, req.TLSFingerprint, req.IsDefault)
 	if err != nil {
 		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -435,10 +442,17 @@ func (s *Server) handleHostSubroutes(w http.ResponseWriter, r *http.Request) {
 				auth.SendJSON(w, http.StatusOK, map[string]string{"status": "default_set"})
 			})(w, r)
 			return
+		case "client-config":
+			s.handleHostCanonicalClientConfig(w, r, hostID, "")
+			return
 		case "client-links":
 			s.handleHostClientLinks(w, r, hostID)
 			return
 		}
+	} else if len(parts) == 4 && parts[1] == "nodes" && parts[3] == "client-config" {
+		nodeID := parts[2]
+		s.handleHostCanonicalClientConfig(w, r, hostID, nodeID)
+		return
 	} else if len(parts) == 3 && parts[1] == "client-links" && parts[2] == "all" {
 		s.handleHostClientLinksAllText(w, r, hostID)
 		return
@@ -456,17 +470,18 @@ func (s *Server) handleHostSubroutes(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPut:
 		s.requireAdminHandler(func(w http.ResponseWriter, r *http.Request) {
 			var req struct {
-				Name     string `json:"name"`
-				Address  string `json:"address"`
-				AgentURL string `json:"agent_url"`
-				Token    string `json:"token"`
-				Enabled  bool   `json:"enabled"`
+				Name           string `json:"name"`
+				Address        string `json:"address"`
+				AgentURL       string `json:"agent_url"`
+				Token          string `json:"token"`
+				TLSFingerprint string `json:"tls_fingerprint"`
+				Enabled        bool   `json:"enabled"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 				return
 			}
-			updated, err := s.hostManager.UpdateHost(hostID, req.Name, req.Address, req.AgentURL, req.Token, req.Enabled)
+			updated, err := s.hostManager.UpdateHostWithFingerprint(hostID, req.Name, req.Address, req.AgentURL, req.Token, req.TLSFingerprint, req.Enabled)
 			if err != nil {
 				auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
@@ -586,6 +601,184 @@ func (s *Server) handleHostClientLinksAllText(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(text))
+}
+
+func (s *Server) handleHostCanonicalClientConfig(w http.ResponseWriter, r *http.Request, hostID, nodeID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if nodeID == "" {
+		nodeID = r.URL.Query().Get("node_id")
+	}
+
+	h, err := s.hostManager.GetHost(hostID)
+	if err != nil {
+		auth.SendJSON(w, http.StatusNotFound, map[string]string{"error": "host not found"})
+		return
+	}
+
+	sess := r.Context().Value(auth.SessionContextKey).(*auth.Session)
+
+	client, err := s.hostManager.GetClient(hostID)
+	if err != nil {
+		s.clientConfigCache.Invalidate(hostID, nodeID)
+		auth.SendJSON(w, http.StatusOK, &proxy.AllClientConfigResponse{
+			Available: false,
+			Error:     "host daemon unavailable: " + err.Error(),
+		})
+		return
+	}
+
+	// Always query canonical daemon API to ensure live runtime status
+	allCfg, err := client.GetAllClientConfig(nodeID)
+	if err != nil || allCfg == nil || !allCfg.Available {
+		// Immediately invalidate any existing cache when runtime is unavailable
+		s.clientConfigCache.Invalidate(hostID, nodeID)
+		if allCfg != nil {
+			auth.SendJSON(w, http.StatusOK, allCfg)
+		} else {
+			auth.SendJSON(w, http.StatusOK, &proxy.AllClientConfigResponse{
+				Available: false,
+				Error:     "runtime endpoint unavailable: " + err.Error(),
+			})
+		}
+		return
+	}
+
+	// Enrich Host attributes
+	for i := range allCfg.Nodes {
+		allCfg.Nodes[i].HostID = h.ID
+		allCfg.Nodes[i].HostName = h.Name
+	}
+
+	// Store validated live config in cache
+	s.clientConfigCache.Set(hostID, nodeID, allCfg)
+
+	// Audit: strictly zero secrets logged! Only host_id, node_id, user, timestamp, result.
+	target := hostID
+	if nodeID != "" {
+		target += ":" + nodeID
+	}
+	audit.GlobalLogger.Log(sess.Username, string(sess.Role), "view_client_config", target, "SUCCESS", auth.GetClientIP(r), "")
+
+	auth.SendJSON(w, http.StatusOK, allCfg)
+}
+
+func (s *Server) handleExportZip(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Selections []struct {
+			HostID string `json:"host_id"`
+			NodeID string `json:"node_id"`
+		} `json:"selections"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Selections) == 0 {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid or empty selections"})
+		return
+	}
+
+	sess := r.Context().Value(auth.SessionContextKey).(*auth.Session)
+
+	buf := new(bytes.Buffer)
+	zipWriter := zip.NewWriter(buf)
+
+	exportedProfiles := 0
+	for _, sel := range req.Selections {
+		h, err := s.hostManager.GetHost(sel.HostID)
+		if err != nil {
+			continue
+		}
+		client, err := s.hostManager.GetClient(sel.HostID)
+		if err != nil {
+			continue
+		}
+
+		hostFolder := sanitizePath(h.Name)
+		nodeFolder := sanitizePath(sel.NodeID)
+
+		// Fetch canonical client config from daemon
+		allCfg, err := client.GetAllClientConfig(sel.NodeID)
+		if err != nil || allCfg == nil || !allCfg.Available {
+			// Write status file indicating unavailable
+			statusFile, _ := zipWriter.Create(fmt.Sprintf("%s/%s/status.txt", hostFolder, nodeFolder))
+			if statusFile != nil {
+				errMsg := "Client configuration temporarily unavailable"
+				if allCfg != nil && allCfg.Error != "" {
+					errMsg = allCfg.Error
+				}
+				_, _ = statusFile.Write([]byte(errMsg + "\n"))
+			}
+			continue
+		}
+
+		// Write profiles
+		for _, node := range allCfg.Nodes {
+			for _, profile := range node.Profiles {
+				fileName := profile.Filename
+				if fileName == "" {
+					fileName = profile.ID + ".txt"
+				}
+				entryPath := fmt.Sprintf("%s/%s/%s", hostFolder, nodeFolder, sanitizePath(fileName))
+				f, err := zipWriter.Create(entryPath)
+				if err == nil {
+					_, _ = f.Write([]byte(profile.Content))
+					exportedProfiles++
+				}
+			}
+		}
+	}
+
+	if err := zipWriter.Close(); err != nil {
+		auth.SendJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate zip"})
+		return
+	}
+
+	audit.GlobalLogger.Log(sess.Username, string(sess.Role), "batch_export_zip", fmt.Sprintf("nodes:%d_profiles:%d", len(req.Selections), exportedProfiles), "SUCCESS", auth.GetClientIP(r), "")
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"super-proxy-configs.zip\"")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(buf.Bytes())
+}
+
+func (s *Server) handleClientConfigAudit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		HostID    string `json:"host_id"`
+		NodeID    string `json:"node_id"`
+		Action    string `json:"action"`     // "copy", "download", "qr", "copy_all"
+		ProfileID string `json:"profile_id"` // "vless", "clash", "sing-box", etc.
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	sess := r.Context().Value(auth.SessionContextKey).(*auth.Session)
+	target := fmt.Sprintf("%s:%s:%s", req.HostID, req.NodeID, req.ProfileID)
+	auditAction := req.Action + "_client_config"
+
+	audit.GlobalLogger.Log(sess.Username, string(sess.Role), auditAction, target, "SUCCESS", auth.GetClientIP(r), "")
+	auth.SendJSON(w, http.StatusOK, map[string]string{"status": "audited"})
+}
+
+func sanitizePath(name string) string {
+	name = strings.ReplaceAll(name, "/", "_")
+	name = strings.ReplaceAll(name, "\\", "_")
+	name = strings.ReplaceAll(name, "..", "_")
+	return strings.TrimSpace(name)
 }
 
 // --- Daemon Control Plane Handlers (Host-Aware) ---

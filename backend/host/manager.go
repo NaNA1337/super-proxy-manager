@@ -30,7 +30,7 @@ func NewHostManager(database *db.DB) *HostManager {
 // ListHosts returns all configured hosts with sanitized attributes (no token)
 func (m *HostManager) ListHosts() ([]*Host, error) {
 	rows, err := m.db.Conn().Query(`
-		SELECT id, name, address, agent_url, enabled, status, last_seen, version, region, is_default, created_at, updated_at
+		SELECT id, name, address, agent_url, enabled, status, last_seen, version, region, tls_fingerprint, is_default, created_at, updated_at
 		FROM manager_hosts
 		ORDER BY is_default DESC, name ASC
 	`)
@@ -47,7 +47,7 @@ func (m *HostManager) ListHosts() ([]*Host, error) {
 
 		err := rows.Scan(
 			&h.ID, &h.Name, &h.Address, &h.AgentURL,
-			&enInt, &h.Status, &lastSeen, &h.Version, &h.Region, &isDefInt,
+			&enInt, &h.Status, &lastSeen, &h.Version, &h.Region, &h.TLSFingerprint, &isDefInt,
 			&h.CreatedAt, &h.UpdatedAt,
 		)
 		if err != nil {
@@ -76,12 +76,12 @@ func (m *HostManager) GetHost(id string) (*Host, error) {
 	var isDefInt, enInt int
 
 	err := m.db.Conn().QueryRow(`
-		SELECT id, name, address, agent_url, enabled, status, last_seen, version, region, is_default, created_at, updated_at
+		SELECT id, name, address, agent_url, enabled, status, last_seen, version, region, tls_fingerprint, is_default, created_at, updated_at
 		FROM manager_hosts
 		WHERE id = ?
 	`, id).Scan(
 		&h.ID, &h.Name, &h.Address, &h.AgentURL,
-		&enInt, &h.Status, &lastSeen, &h.Version, &h.Region, &isDefInt,
+		&enInt, &h.Status, &lastSeen, &h.Version, &h.Region, &h.TLSFingerprint, &isDefInt,
 		&h.CreatedAt, &h.UpdatedAt,
 	)
 	if err != nil {
@@ -107,13 +107,13 @@ func (m *HostManager) GetDefaultHost() (*Host, error) {
 	var isDefInt, enInt int
 
 	err := m.db.Conn().QueryRow(`
-		SELECT id, name, address, agent_url, enabled, status, last_seen, version, region, is_default, created_at, updated_at
+		SELECT id, name, address, agent_url, enabled, status, last_seen, version, region, tls_fingerprint, is_default, created_at, updated_at
 		FROM manager_hosts
 		WHERE is_default = 1 AND enabled = 1
 		LIMIT 1
 	`).Scan(
 		&h.ID, &h.Name, &h.Address, &h.AgentURL,
-		&enInt, &h.Status, &lastSeen, &h.Version, &h.Region, &isDefInt,
+		&enInt, &h.Status, &lastSeen, &h.Version, &h.Region, &h.TLSFingerprint, &isDefInt,
 		&h.CreatedAt, &h.UpdatedAt,
 	)
 	if err != nil {
@@ -159,20 +159,26 @@ func (m *HostManager) SetDefaultHost(id string) error {
 	if err != nil {
 		return err
 	}
-	rows, _ := res.RowsAffected()
-	if rows == 0 {
+	rowsAff, _ := res.RowsAffected()
+	if rowsAff == 0 {
 		return errors.New("host not found")
 	}
 
 	return tx.Commit()
 }
 
-// CreateHost validates, encrypts credentials, and adds a new host
+// CreateHost validates, encrypts credentials, pins TLS fingerprint, and adds a new host
 func (m *HostManager) CreateHost(name, address, agentURL, token string, isDefault bool) (*Host, error) {
+	return m.CreateHostWithFingerprint(name, address, agentURL, token, "", isDefault)
+}
+
+// CreateHostWithFingerprint creates host with specific TLS fingerprint
+func (m *HostManager) CreateHostWithFingerprint(name, address, agentURL, token, tlsFingerprint string, isDefault bool) (*Host, error) {
 	name = strings.TrimSpace(name)
 	address = strings.TrimSpace(address)
 	agentURL = strings.TrimSpace(agentURL)
 	token = strings.TrimSpace(token)
+	tlsFingerprint = strings.TrimSpace(tlsFingerprint)
 
 	if name == "" {
 		return nil, errors.New("host name is required")
@@ -182,6 +188,14 @@ func (m *HostManager) CreateHost(name, address, agentURL, token string, isDefaul
 	}
 	if err := ValidateAgentURL(agentURL); err != nil {
 		return nil, fmt.Errorf("invalid agent URL: %w", err)
+	}
+
+	// Auto-probe TLS fingerprint if not provided and scheme is HTTPS
+	if tlsFingerprint == "" && strings.HasPrefix(strings.ToLower(agentURL), "https://") {
+		detectedFP, err := proxy.ProbeTLS(agentURL)
+		if err == nil && detectedFP != "" {
+			tlsFingerprint = detectedFP
+		}
 	}
 
 	// Encrypt token
@@ -220,9 +234,9 @@ func (m *HostManager) CreateHost(name, address, agentURL, token string, isDefaul
 	}
 
 	_, err = tx.Exec(`
-		INSERT INTO manager_hosts (id, name, address, agent_url, encrypted_token, enabled, status, is_default, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 1, 'pending', ?, ?, ?)
-	`, id, name, address, agentURL, encryptedToken, isDefInt, now, now)
+		INSERT INTO manager_hosts (id, name, address, agent_url, encrypted_token, enabled, status, tls_fingerprint, is_default, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 1, 'pending', ?, ?, ?, ?)
+	`, id, name, address, agentURL, encryptedToken, tlsFingerprint, isDefInt, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert host: %w", err)
 	}
@@ -232,7 +246,7 @@ func (m *HostManager) CreateHost(name, address, agentURL, token string, isDefaul
 	}
 
 	// Cache client instance
-	client := proxy.NewClient(agentURL, token)
+	client := proxy.NewClientWithFingerprint(agentURL, token, tlsFingerprint)
 	m.mu.Lock()
 	m.clients[id] = client
 	m.mu.Unlock()
@@ -245,12 +259,18 @@ func (m *HostManager) CreateHost(name, address, agentURL, token string, isDefaul
 	return m.GetHost(id)
 }
 
-// UpdateHost updates host properties and optionally replaces the token
+// UpdateHost updates host properties and optionally replaces the token / TLS fingerprint
 func (m *HostManager) UpdateHost(id, name, address, agentURL, token string, enabled bool) (*Host, error) {
+	return m.UpdateHostWithFingerprint(id, name, address, agentURL, token, "", enabled)
+}
+
+// UpdateHostWithFingerprint updates host properties with explicit TLS fingerprint
+func (m *HostManager) UpdateHostWithFingerprint(id, name, address, agentURL, token, tlsFingerprint string, enabled bool) (*Host, error) {
 	name = strings.TrimSpace(name)
 	address = strings.TrimSpace(address)
 	agentURL = strings.TrimSpace(agentURL)
 	token = strings.TrimSpace(token)
+	tlsFingerprint = strings.TrimSpace(tlsFingerprint)
 
 	if name == "" {
 		return nil, errors.New("host name cannot be empty")
@@ -268,6 +288,11 @@ func (m *HostManager) UpdateHost(id, name, address, agentURL, token string, enab
 		enInt = 1
 	}
 
+	// If fingerprint not provided, keep existing
+	if tlsFingerprint == "" {
+		_ = m.db.Conn().QueryRow("SELECT tls_fingerprint FROM manager_hosts WHERE id = ?", id).Scan(&tlsFingerprint)
+	}
+
 	if token != "" {
 		encryptedToken, err := m.db.Encrypt(token)
 		if err != nil {
@@ -275,28 +300,28 @@ func (m *HostManager) UpdateHost(id, name, address, agentURL, token string, enab
 		}
 		_, err = m.db.Conn().Exec(`
 			UPDATE manager_hosts
-			SET name = ?, address = ?, agent_url = ?, encrypted_token = ?, enabled = ?, updated_at = ?
+			SET name = ?, address = ?, agent_url = ?, encrypted_token = ?, tls_fingerprint = ?, enabled = ?, updated_at = ?
 			WHERE id = ?
-		`, name, address, agentURL, encryptedToken, enInt, now, id)
+		`, name, address, agentURL, encryptedToken, tlsFingerprint, enInt, now, id)
 		if err != nil {
 			return nil, err
 		}
 
 		// Update cached client
 		m.mu.Lock()
-		m.clients[id] = proxy.NewClient(agentURL, token)
+		m.clients[id] = proxy.NewClientWithFingerprint(agentURL, token, tlsFingerprint)
 		m.mu.Unlock()
 	} else {
 		_, err := m.db.Conn().Exec(`
 			UPDATE manager_hosts
-			SET name = ?, address = ?, agent_url = ?, enabled = ?, updated_at = ?
+			SET name = ?, address = ?, agent_url = ?, tls_fingerprint = ?, enabled = ?, updated_at = ?
 			WHERE id = ?
-		`, name, address, agentURL, enInt, now, id)
+		`, name, address, agentURL, tlsFingerprint, enInt, now, id)
 		if err != nil {
 			return nil, err
 		}
 
-		// Invalidate cached client to force re-instantiation with updated URL
+		// Invalidate cached client to force re-instantiation with updated URL/fingerprint
 		m.mu.Lock()
 		delete(m.clients, id)
 		m.mu.Unlock()
@@ -353,13 +378,13 @@ func (m *HostManager) GetClient(hostID string) (*proxy.DaemonClient, error) {
 	}
 
 	// Fetch from DB
-	var agentURL, encToken string
+	var agentURL, encToken, tlsFingerprint string
 	var enabled int
 	err := m.db.Conn().QueryRow(`
-		SELECT agent_url, encrypted_token, enabled
+		SELECT agent_url, encrypted_token, enabled, tls_fingerprint
 		FROM manager_hosts
 		WHERE id = ?
-	`, hostID).Scan(&agentURL, &encToken, &enabled)
+	`, hostID).Scan(&agentURL, &encToken, &enabled, &tlsFingerprint)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("host %q not found", hostID)
@@ -376,7 +401,7 @@ func (m *HostManager) GetClient(hostID string) (*proxy.DaemonClient, error) {
 		return nil, fmt.Errorf("failed to decrypt host token: %w", err)
 	}
 
-	client = proxy.NewClient(agentURL, token)
+	client = proxy.NewClientWithFingerprint(agentURL, token, tlsFingerprint)
 	m.mu.Lock()
 	m.clients[hostID] = client
 	m.mu.Unlock()
@@ -384,7 +409,7 @@ func (m *HostManager) GetClient(hostID string) (*proxy.DaemonClient, error) {
 	return client, nil
 }
 
-// TestConnection tests reachability and credentials for an agent URL and token without saving
+// TestConnection tests reachability, TLS fingerprint, and credentials for an agent URL and token without saving
 func (m *HostManager) TestConnection(agentURL, token string) (*TestConnectionResult, error) {
 	if err := ValidateAgentURL(agentURL); err != nil {
 		return &TestConnectionResult{
@@ -394,25 +419,36 @@ func (m *HostManager) TestConnection(agentURL, token string) (*TestConnectionRes
 		}, nil
 	}
 
-	client := proxy.NewClient(agentURL, token)
+	// Probe TLS certificate fingerprint if HTTPS
+	detectedFP, probeErr := proxy.ProbeTLS(agentURL)
+	if probeErr != nil && strings.HasPrefix(strings.ToLower(agentURL), "https://") {
+		return &TestConnectionResult{
+			Success: false,
+			Status:  "offline",
+			Error:   fmt.Sprintf("TLS probe failed: %v", probeErr),
+		}, nil
+	}
+
+	client := proxy.NewClientWithFingerprint(agentURL, token, detectedFP)
 	start := time.Now()
 
 	status, err := client.GetStatus()
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
 		safeErr := err.Error()
-		if strings.Contains(safeErr, "x509") {
-			safeErr = "TLS certificate validation failed"
+		if strings.Contains(safeErr, "x509") || strings.Contains(safeErr, "fingerprint mismatch") {
+			safeErr = "TLS certificate validation failed: " + safeErr
 		} else if strings.Contains(safeErr, "connection refused") {
 			safeErr = "Connection refused: daemon is not reachable on target port"
 		} else if strings.Contains(safeErr, "401") || strings.Contains(safeErr, "Unauthorized") {
 			safeErr = "Authentication failed: invalid Agent API token"
 		}
 		return &TestConnectionResult{
-			Success:   false,
-			Status:    "offline",
-			LatencyMs: latency,
-			Error:     safeErr,
+			Success:             false,
+			Status:              "offline",
+			LatencyMs:           latency,
+			DetectedFingerprint: detectedFP,
+			Error:               safeErr,
 		}, nil
 	}
 
@@ -428,22 +464,24 @@ func (m *HostManager) TestConnection(agentURL, token string) (*TestConnectionRes
 	}
 
 	return &TestConnectionResult{
-		Success:   true,
-		Status:    "healthy",
-		Version:   version,
-		Region:    region,
-		LatencyMs: latency,
+		Success:             true,
+		Status:              "online",
+		Version:             version,
+		Region:              region,
+		LatencyMs:           latency,
+		DetectedFingerprint: detectedFP,
+		TLSFingerprint:      detectedFP,
 	}, nil
 }
 
 // ProbeHost checks an existing host and records status and telemetry in database
 func (m *HostManager) ProbeHost(hostID string) (*TestConnectionResult, error) {
-	var agentURL, encToken string
+	var agentURL, encToken, tlsFingerprint string
 	err := m.db.Conn().QueryRow(`
-		SELECT agent_url, encrypted_token
+		SELECT agent_url, encrypted_token, tls_fingerprint
 		FROM manager_hosts
 		WHERE id = ?
-	`, hostID).Scan(&agentURL, &encToken)
+	`, hostID).Scan(&agentURL, &encToken, &tlsFingerprint)
 	if err != nil {
 		return nil, err
 	}
@@ -460,17 +498,30 @@ func (m *HostManager) ProbeHost(hostID string) (*TestConnectionResult, error) {
 
 	now := time.Now().UTC()
 	if res.Success {
+		// Update status to online, record version, region, and update TLS fingerprint if previously empty
+		if tlsFingerprint == "" && res.DetectedFingerprint != "" {
+			tlsFingerprint = res.DetectedFingerprint
+		}
 		_, _ = m.db.Conn().Exec(`
 			UPDATE manager_hosts
-			SET status = ?, version = ?, region = ?, last_seen = ?, updated_at = ?
+			SET status = ?, version = ?, region = ?, tls_fingerprint = ?, last_seen = ?, updated_at = ?
 			WHERE id = ?
-		`, res.Status, res.Version, res.Region, now, now, hostID)
+		`, "online", res.Version, res.Region, tlsFingerprint, now, now, hostID)
 	} else {
+		// Determine status: offline or unknown
+		status := "offline"
+		if strings.Contains(res.Error, "incompatible") {
+			status = "incompatible"
+		} else if strings.Contains(res.Error, "degraded") {
+			status = "degraded"
+		} else if strings.Contains(res.Error, "timeout") {
+			status = "unknown"
+		}
 		_, _ = m.db.Conn().Exec(`
 			UPDATE manager_hosts
 			SET status = ?, updated_at = ?
 			WHERE id = ?
-		`, res.Status, now, hostID)
+		`, status, now, hostID)
 	}
 
 	return res, nil

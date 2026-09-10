@@ -208,6 +208,7 @@ func (d *DB) migrate() error {
 		last_seen TIMESTAMP,
 		version TEXT NOT NULL DEFAULT '',
 		region TEXT NOT NULL DEFAULT '',
+		tls_fingerprint TEXT NOT NULL DEFAULT '',
 		is_default BOOLEAN NOT NULL DEFAULT 0,
 		created_at TIMESTAMP NOT NULL,
 		updated_at TIMESTAMP NOT NULL
@@ -238,6 +239,12 @@ func (d *DB) migrate() error {
 		revoked BOOLEAN NOT NULL DEFAULT 0
 	);
 	`
-	_, err := d.conn.Exec(schema)
-	return err
+	if _, err := d.conn.Exec(schema); err != nil {
+		return err
+	}
+
+	// Idempotent column additions for upgrades
+	_, _ = d.conn.Exec("ALTER TABLE manager_hosts ADD COLUMN tls_fingerprint TEXT NOT NULL DEFAULT ''")
+
+	return nil
 }

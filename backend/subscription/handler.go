@@ -159,68 +159,79 @@ func (h *Handler) HandleGetSubscription(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 1. Fetch current exits and candidate nodes
-	var candidateNodes []sharelink.NodeInfo
-	exits, _ := client.GetCurrentExits()
-	for _, exit := range exits {
-		ip, _ := exit["ip"].(string)
-		country, _ := exit["country"].(string)
-		nodeID, _ := exit["node_id"].(string)
-		status, _ := exit["status"].(string)
-		if ip != "" {
-			candidateNodes = append(candidateNodes, sharelink.NodeInfo{
-				ID:      nodeID,
-				IP:      ip,
-				Country: country,
-				Status:  status,
-			})
+	// 1. Attempt canonical profiles first directly from Agent
+	var links []string
+	allCfg, cfgErr := client.GetAllClientConfig("")
+	if cfgErr == nil && allCfg != nil && allCfg.Available && len(allCfg.Nodes) > 0 {
+		for _, n := range allCfg.Nodes {
+			if sub.Profile == ProfileRegion && sub.RegionFilter != "" {
+				if !strings.EqualFold(n.Country, sub.RegionFilter) {
+					continue
+				}
+			}
+			for _, p := range n.Profiles {
+				if p.Format == "uri" || p.ID == "vless" {
+					links = append(links, p.Content)
+					break // One primary URI per node
+				}
+			}
 		}
 	}
 
-	// Fallback to pool qualified if no active exits or profile is AllNodes
-	if len(candidateNodes) == 0 || sub.Profile == ProfileAllNodes {
-		qualified, _ := client.GetPoolQualified()
-		for _, q := range qualified {
-			ip, _ := q["ip"].(string)
-			country, _ := q["country"].(string)
-			nodeID, _ := q["id"].(string)
+	// 2. If canonical profiles were not returned, fall back to discovered candidate nodes
+	if len(links) == 0 {
+		var candidateNodes []sharelink.NodeInfo
+		exits, _ := client.GetCurrentExits()
+		for _, exit := range exits {
+			ip, _ := exit["ip"].(string)
+			country, _ := exit["country"].(string)
+			nodeID, _ := exit["node_id"].(string)
+			status, _ := exit["status"].(string)
 			if ip != "" {
 				candidateNodes = append(candidateNodes, sharelink.NodeInfo{
 					ID:      nodeID,
 					IP:      ip,
 					Country: country,
+					Status:  status,
 				})
 			}
 		}
-	}
 
-	// 2. Fetch runtime config
-	rawCfg, _ := client.GetClientConfig()
-	cfg := parseRuntimeConfig(rawCfg)
-
-	// 3. Filter candidates based on Profile, Region, and Protocol
-	var links []string
-	for _, node := range candidateNodes {
-		if sub.Profile == ProfileRegion && sub.RegionFilter != "" {
-			if !strings.EqualFold(node.Country, sub.RegionFilter) {
-				continue
+		// Fallback to pool qualified if no active exits or profile is AllNodes
+		if len(candidateNodes) == 0 || sub.Profile == ProfileAllNodes {
+			qualified, _ := client.GetPoolQualified()
+			for _, q := range qualified {
+				ip, _ := q["ip"].(string)
+				country, _ := q["country"].(string)
+				nodeID, _ := q["id"].(string)
+				if ip != "" {
+					candidateNodes = append(candidateNodes, sharelink.NodeInfo{
+						ID:      nodeID,
+						IP:      ip,
+						Country: country,
+					})
+				}
 			}
 		}
 
-		// Determine target protocol
-		targetProtocol := "vless"
-		if sub.Profile == ProfileProtocol && sub.ProtocolFilter != "" {
-			targetProtocol = strings.ToLower(sub.ProtocolFilter)
-		}
+		rawCfg, _ := client.GetClientConfig()
+		cfg := parseRuntimeConfig(rawCfg)
 
-		res, err := h.shareService.Generate(node, targetProtocol, cfg)
-		if err == nil && res != nil && res.Supported && res.URI != "" {
-			links = append(links, res.URI)
-		} else if targetProtocol == "vless" && (res == nil || !res.Supported) {
-			// Fallback to socks5 if vless is not supported in current runtime
-			resSocks, errSocks := h.shareService.Generate(node, "socks5", cfg)
-			if errSocks == nil && resSocks != nil && resSocks.Supported && resSocks.URI != "" {
-				links = append(links, resSocks.URI)
+		for _, node := range candidateNodes {
+			if sub.Profile == ProfileRegion && sub.RegionFilter != "" {
+				if !strings.EqualFold(node.Country, sub.RegionFilter) {
+					continue
+				}
+			}
+
+			targetProtocol := "vless"
+			if sub.Profile == ProfileProtocol && sub.ProtocolFilter != "" {
+				targetProtocol = strings.ToLower(sub.ProtocolFilter)
+			}
+
+			res, err := h.shareService.Generate(node, targetProtocol, cfg)
+			if err == nil && res != nil && res.Supported && res.URI != "" {
+				links = append(links, res.URI)
 			}
 		}
 	}

@@ -15,10 +15,11 @@ export interface Host {
   address: string;
   agent_url: string;
   enabled: boolean;
-  status: string; // 'healthy' | 'degraded' | 'offline' | 'pending'
+  status: string; // 'online' | 'healthy' | 'degraded' | 'offline' | 'unknown' | 'incompatible'
   last_seen?: string;
   version: string;
   region: string;
+  tls_fingerprint?: string;
   is_default: boolean;
   active_slots?: number;
   latency_ms?: number;
@@ -32,7 +33,44 @@ export interface TestConnectionResult {
   version?: string;
   region?: string;
   latency_ms?: number;
+  tls_fingerprint?: string;
+  detected_fingerprint?: string;
   error?: string;
+}
+
+export interface CanonicalProfile {
+  id: string;
+  name: string;
+  format: 'uri' | 'yaml' | 'json' | 'text' | string;
+  filename: string;
+  mime_type: string;
+  content: string;
+  description?: string;
+  can_qr?: boolean;
+}
+
+export interface NodeClientConfig {
+  available: boolean;
+  error?: string;
+  host_id?: string;
+  host_name?: string;
+  node_id: string;
+  node_ip?: string;
+  country?: string;
+  endpoint_address?: string;
+  endpoint_port?: number;
+  protocol?: string;
+  transport?: string;
+  flow?: string;
+  updated_at?: string;
+  profiles: CanonicalProfile[];
+}
+
+export interface AllClientConfigResponse {
+  available: boolean;
+  error?: string;
+  nodes?: NodeClientConfig[];
+  profiles?: CanonicalProfile[];
 }
 
 export interface ClientProfile {
