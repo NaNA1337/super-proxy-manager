@@ -6,13 +6,14 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/NaNA1337/super-proxy-manager/backend/audit"
 	"github.com/NaNA1337/super-proxy-manager/backend/auth"
+	"github.com/NaNA1337/super-proxy-manager/backend/db"
+	"github.com/NaNA1337/super-proxy-manager/backend/host"
 	"github.com/NaNA1337/super-proxy-manager/backend/proxy"
 	"github.com/NaNA1337/super-proxy-manager/backend/sharelink"
 	"github.com/NaNA1337/super-proxy-manager/backend/subscription"
@@ -20,7 +21,8 @@ import (
 
 type Server struct {
 	addr         string
-	daemonClient *proxy.DaemonClient
+	db           *db.DB
+	hostManager  *host.HostManager
 	shareService *sharelink.Service
 	subStore     *subscription.Store
 	subHandler   *subscription.Handler
@@ -28,19 +30,24 @@ type Server struct {
 	mux          *http.ServeMux
 }
 
-func NewServer(addr string, distFS fs.FS) *Server {
+func NewServer(addr string, database *db.DB, distFS fs.FS) *Server {
 	if addr == "" {
 		addr = ":8443"
 	}
 
-	client := proxy.NewDaemonClient()
+	hm := host.NewHostManager(database)
 	ss := sharelink.NewService()
 	subStore := subscription.NewStore()
-	subHandler := subscription.NewHandler(subStore, client, ss)
+
+	clientProvider := func(hostID string) (*proxy.DaemonClient, error) {
+		return hm.GetClient(hostID)
+	}
+	subHandler := subscription.NewHandlerWithProvider(subStore, clientProvider, ss)
 
 	s := &Server{
 		addr:         addr,
-		daemonClient: client,
+		db:           database,
+		hostManager:  hm,
 		shareService: ss,
 		subStore:     subStore,
 		subHandler:   subHandler,
@@ -60,8 +67,21 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/auth/login", s.handleLogin)
 	s.mux.HandleFunc("/api/auth/logout", s.handleLogout)
 	s.mux.HandleFunc("/api/auth/me", s.handleMe)
+	s.mux.HandleFunc("/api/auth/change-password", s.requireAuthHandler(s.handleChangePassword))
+	s.mux.HandleFunc("/api/auth/bootstrap-status", s.handleBootstrapStatus)
 
-	// 3. Daemon Control Plane (Authenticated)
+	// 3. Host Management Endpoints (Admin & Authenticated)
+	s.mux.HandleFunc("/api/hosts", s.requireAuthHandler(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			s.requireAdminHandler(s.handleCreateHost)(w, r)
+			return
+		}
+		s.handleListHosts(w, r)
+	}))
+	s.mux.HandleFunc("/api/hosts/test", s.requireAdminHandler(s.handleTestHostPreSave))
+	s.mux.HandleFunc("/api/hosts/", s.requireAuthHandler(s.handleHostSubroutes))
+
+	// 4. Daemon Control Plane (Authenticated & Host-Aware)
 	s.mux.HandleFunc("/api/daemon/status", s.requireAuthHandler(s.handleDaemonStatus))
 	s.mux.HandleFunc("/api/daemon/system", s.requireAuthHandler(s.handleDaemonSystem))
 	s.mux.HandleFunc("/api/daemon/current-exits", s.requireAuthHandler(s.handleDaemonCurrentExits))
@@ -74,18 +94,17 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/daemon/routing", s.requireAuthHandler(s.handleDaemonRouting))
 	s.mux.HandleFunc("/api/daemon/operations/", s.requireAuthHandler(s.handleDaemonOperation))
 
-	// Slot switch (Restricted to admin + CSRF enforced)
+	// Slot switch (Restricted to admin + CSRF enforced + requires specific host)
 	s.mux.HandleFunc("/api/daemon/slots/", s.requireAdminHandler(s.handleDaemonSlotAction))
 
-	// 4. ShareLink Endpoints
+	// 5. ShareLink Endpoints
 	s.mux.HandleFunc("/api/sharelinks/protocols", s.requireAuthHandler(s.handleShareProtocols))
 	s.mux.HandleFunc("/api/sharelinks/generate", s.requireAuthHandler(s.handleShareGenerate))
 	s.mux.HandleFunc("/api/sharelinks/batch", s.requireAuthHandler(s.handleShareBatch))
 
-	// 5. Subscription Management
+	// 6. Subscription Management
 	s.mux.HandleFunc("/api/subscriptions", s.requireAuthHandler(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
-			// Require admin for creating subscriptions
 			sess := r.Context().Value(auth.SessionContextKey).(*auth.Session)
 			if sess == nil || sess.Role != auth.RoleAdmin {
 				http.Error(w, `{"error":"admin required"}`, http.StatusForbidden)
@@ -107,14 +126,14 @@ func (s *Server) setupRoutes() {
 		http.NotFound(w, r)
 	}))
 
-	// 6. Audit & Events
+	// 7. Audit & Events
 	s.mux.HandleFunc("/api/audit", s.requireAuthHandler(audit.HandleGetAuditLogs))
 	s.mux.HandleFunc("/api/events", s.requireAuthHandler(s.handleEvents))
 
-	// 7. Settings (Read-only)
+	// 8. Settings (Host-aware & Read-only)
 	s.mux.HandleFunc("/api/settings", s.requireAuthHandler(s.handleSettings))
 
-	// 8. Static SPA files or fallback
+	// 9. Static SPA files or fallback
 	if s.distFS != nil {
 		fileServer := http.FileServer(http.FS(s.distFS))
 		s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -148,7 +167,7 @@ func (s *Server) Handler() http.Handler {
 	// Chain: Redacted Logging -> Security Headers -> Session -> Rate Limit -> Mux
 	return subscription.RedactedLoggingMiddleware(
 		auth.SecurityHeadersMiddleware(
-			auth.SessionMiddleware(s.mux),
+			auth.SessionMiddleware(s.db)(s.mux),
 		),
 	)
 }
@@ -164,6 +183,26 @@ func (s *Server) requireAdminHandler(h http.HandlerFunc) http.HandlerFunc {
 		auth.RequireAdmin(http.HandlerFunc(h)).ServeHTTP(w, r)
 	}
 }
+
+// resolveTargetHost determines the target host and DaemonClient for the request
+func (s *Server) resolveTargetHost(r *http.Request) (string, *proxy.DaemonClient, error) {
+	hostID := r.Header.Get("X-Host-ID")
+	if hostID == "" {
+		hostID = r.URL.Query().Get("host_id")
+	}
+
+	if strings.EqualFold(hostID, "all") {
+		return "all", nil, nil
+	}
+
+	client, err := s.hostManager.GetClient(hostID)
+	if err != nil {
+		return "", nil, err
+	}
+	return hostID, client, nil
+}
+
+// --- Auth Handlers ---
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -186,14 +225,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := auth.Authenticate(req.Username, req.Password)
+	user, err := auth.Authenticate(s.db, req.Username, req.Password)
 	if err != nil {
 		audit.GlobalLogger.Log(req.Username, "unknown", "login", "auth", "FAILED", ip, "invalid credentials")
 		auth.SendJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
 
-	sess, err := auth.CreateSession(user, 24*time.Hour)
+	sess, err := auth.CreateSession(s.db, user, 24*time.Hour)
 	if err != nil {
 		auth.SendJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create session"})
 		return
@@ -205,17 +244,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	audit.GlobalLogger.Log(user.Username, string(user.Role), "login", "auth", "SUCCESS", ip, "session created")
 
 	auth.SendJSON(w, http.StatusOK, map[string]interface{}{
-		"username":   user.Username,
-		"role":       user.Role,
-		"token":      sess.Token,
-		"csrf_token": sess.CSRFToken,
-		"expires_at": sess.ExpiresAt,
+		"authenticated":        true,
+		"must_change_password": user.MustChangePassword,
+		"username":             user.Username,
+		"role":                 user.Role,
+		"token":                sess.Token,
+		"csrf_token":           sess.CSRFToken,
+		"expires_at":           sess.ExpiresAt,
 	})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if sess, ok := r.Context().Value(auth.SessionContextKey).(*auth.Session); ok && sess != nil {
-		auth.RevokeSession(sess.Token)
+		auth.RevokeSession(s.db, sess.Token)
 		audit.GlobalLogger.Log(sess.Username, string(sess.Role), "logout", "auth", "SUCCESS", auth.GetClientIP(r), "")
 	}
 	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
@@ -230,16 +271,355 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth.SendJSON(w, http.StatusOK, map[string]interface{}{
-		"authenticated": true,
-		"username":      sess.Username,
-		"role":          sess.Role,
-		"csrf_token":    sess.CSRFToken,
-		"expires_at":    sess.ExpiresAt,
+		"authenticated":        true,
+		"must_change_password": sess.MustChangePassword,
+		"username":             sess.Username,
+		"role":                 sess.Role,
+		"csrf_token":           sess.CSRFToken,
+		"expires_at":           sess.ExpiresAt,
 	})
 }
 
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sess := r.Context().Value(auth.SessionContextKey).(*auth.Session)
+	if sess == nil {
+		auth.SendJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+		ConfirmPassword string `json:"confirm_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	err := auth.ChangePassword(s.db, sess.Username, req.CurrentPassword, req.NewPassword, req.ConfirmPassword)
+	if err != nil {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Create new session for the updated user
+	userUpdated, err := auth.Authenticate(s.db, sess.Username, req.NewPassword)
+	if err != nil {
+		auth.SendJSON(w, http.StatusInternalServerError, map[string]string{"error": "password changed but failed to re-authenticate"})
+		return
+	}
+
+	newSess, err := auth.CreateSession(s.db, userUpdated, 24*time.Hour)
+	if err != nil {
+		auth.SendJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to issue new session"})
+		return
+	}
+
+	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+	auth.SetSessionCookie(w, newSess.Token, newSess.ExpiresAt, isSecure)
+
+	audit.GlobalLogger.Log(sess.Username, string(sess.Role), "change_password", "user_credentials", "SUCCESS", auth.GetClientIP(r), "password updated successfully")
+
+	auth.SendJSON(w, http.StatusOK, map[string]interface{}{
+		"status":                "password_changed",
+		"must_change_password": false,
+		"csrf_token":           newSess.CSRFToken,
+		"expires_at":           newSess.ExpiresAt,
+	})
+}
+
+func (s *Server) handleBootstrapStatus(w http.ResponseWriter, r *http.Request) {
+	var count int
+	_ = s.db.Conn().QueryRow("SELECT COUNT(*) FROM users WHERE must_change_password = 1").Scan(&count)
+	auth.SendJSON(w, http.StatusOK, map[string]interface{}{
+		"initial_setup_required": count > 0,
+	})
+}
+
+// --- Host Management Handlers ---
+
+func (s *Server) handleListHosts(w http.ResponseWriter, r *http.Request) {
+	hosts, err := s.hostManager.ListHosts()
+	if err != nil {
+		auth.SendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if hosts == nil {
+		hosts = []*host.Host{}
+	}
+	auth.SendJSON(w, http.StatusOK, hosts)
+}
+
+func (s *Server) handleCreateHost(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name      string `json:"name"`
+		Address   string `json:"address"`
+		AgentURL  string `json:"agent_url"`
+		Token     string `json:"token"`
+		IsDefault bool   `json:"is_default"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	created, err := s.hostManager.CreateHost(req.Name, req.Address, req.AgentURL, req.Token, req.IsDefault)
+	if err != nil {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	sess := r.Context().Value(auth.SessionContextKey).(*auth.Session)
+	audit.GlobalLogger.Log(sess.Username, string(sess.Role), "create_host", created.Name, "SUCCESS", auth.GetClientIP(r), created.AgentURL)
+
+	auth.SendJSON(w, http.StatusCreated, created)
+}
+
+func (s *Server) handleTestHostPreSave(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		AgentURL string `json:"agent_url"`
+		Token    string `json:"token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	res, err := s.hostManager.TestConnection(req.AgentURL, req.Token)
+	if err != nil {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	auth.SendJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleHostSubroutes(w http.ResponseWriter, r *http.Request) {
+	// Pattern: /api/hosts/{id} or /api/hosts/{id}/...
+	path := strings.TrimPrefix(r.URL.Path, "/api/hosts/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	hostID := parts[0]
+
+	// Specific actions:
+	if len(parts) == 2 {
+		switch parts[1] {
+		case "test":
+			s.requireAdminHandler(func(w http.ResponseWriter, r *http.Request) {
+				res, err := s.hostManager.ProbeHost(hostID)
+				if err != nil {
+					auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				auth.SendJSON(w, http.StatusOK, res)
+			})(w, r)
+			return
+		case "default":
+			s.requireAdminHandler(func(w http.ResponseWriter, r *http.Request) {
+				if err := s.hostManager.SetDefaultHost(hostID); err != nil {
+					auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				auth.SendJSON(w, http.StatusOK, map[string]string{"status": "default_set"})
+			})(w, r)
+			return
+		case "client-links":
+			s.handleHostClientLinks(w, r, hostID)
+			return
+		}
+	} else if len(parts) == 3 && parts[1] == "client-links" && parts[2] == "all" {
+		s.handleHostClientLinksAllText(w, r, hostID)
+		return
+	}
+
+	// Single Host CRUD
+	switch r.Method {
+	case http.MethodGet:
+		h, err := s.hostManager.GetHost(hostID)
+		if err != nil {
+			auth.SendJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		auth.SendJSON(w, http.StatusOK, h)
+	case http.MethodPut:
+		s.requireAdminHandler(func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				Name     string `json:"name"`
+				Address  string `json:"address"`
+				AgentURL string `json:"agent_url"`
+				Token    string `json:"token"`
+				Enabled  bool   `json:"enabled"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+				return
+			}
+			updated, err := s.hostManager.UpdateHost(hostID, req.Name, req.Address, req.AgentURL, req.Token, req.Enabled)
+			if err != nil {
+				auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			sess := r.Context().Value(auth.SessionContextKey).(*auth.Session)
+			audit.GlobalLogger.Log(sess.Username, string(sess.Role), "update_host", updated.Name, "SUCCESS", auth.GetClientIP(r), updated.AgentURL)
+			auth.SendJSON(w, http.StatusOK, updated)
+		})(w, r)
+	case http.MethodDelete:
+		s.requireAdminHandler(func(w http.ResponseWriter, r *http.Request) {
+			if err := s.hostManager.DeleteHost(hostID); err != nil {
+				auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			sess := r.Context().Value(auth.SessionContextKey).(*auth.Session)
+			audit.GlobalLogger.Log(sess.Username, string(sess.Role), "delete_host", hostID, "SUCCESS", auth.GetClientIP(r), "")
+			auth.SendJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+		})(w, r)
+	default:
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleHostClientLinks(w http.ResponseWriter, r *http.Request, hostID string) {
+	h, err := s.hostManager.GetHost(hostID)
+	if err != nil {
+		auth.SendJSON(w, http.StatusNotFound, map[string]string{"error": "host not found"})
+		return
+	}
+
+	client, err := s.hostManager.GetClient(hostID)
+	if err != nil {
+		auth.SendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+
+	rawCfg, _ := client.GetClientConfig()
+	cfg := parseRuntimeConfig(rawCfg)
+
+	exits, _ := client.GetCurrentExits()
+	var profiles []*sharelink.ClientProfile
+
+	for _, exit := range exits {
+		ip, _ := exit["ip"].(string)
+		country, _ := exit["country"].(string)
+		nodeID, _ := exit["node_id"].(string)
+		if ip == "" {
+			continue
+		}
+		node := sharelink.NodeInfo{
+			ID:      nodeID,
+			IP:      ip,
+			Country: country,
+		}
+
+		// Try VLESS first if enabled
+		if cfg.VlessEnabled {
+			if p, err := sharelink.GenerateClientProfile(h.ID, h.Name, node, "vless", cfg); err == nil && p != nil {
+				profiles = append(profiles, p)
+			}
+		}
+		// SOCKS5
+		if cfg.SocksPort > 0 {
+			if p, err := sharelink.GenerateClientProfile(h.ID, h.Name, node, "socks5", cfg); err == nil && p != nil {
+				profiles = append(profiles, p)
+			}
+		}
+	}
+
+	auth.SendJSON(w, http.StatusOK, profiles)
+}
+
+func (s *Server) handleHostClientLinksAllText(w http.ResponseWriter, r *http.Request, hostID string) {
+	h, err := s.hostManager.GetHost(hostID)
+	if err != nil {
+		auth.SendJSON(w, http.StatusNotFound, map[string]string{"error": "host not found"})
+		return
+	}
+
+	client, err := s.hostManager.GetClient(hostID)
+	if err != nil {
+		auth.SendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+
+	rawCfg, _ := client.GetClientConfig()
+	cfg := parseRuntimeConfig(rawCfg)
+
+	exits, _ := client.GetCurrentExits()
+	var profiles []*sharelink.ClientProfile
+
+	for _, exit := range exits {
+		ip, _ := exit["ip"].(string)
+		country, _ := exit["country"].(string)
+		nodeID, _ := exit["node_id"].(string)
+		if ip == "" {
+			continue
+		}
+		node := sharelink.NodeInfo{
+			ID:      nodeID,
+			IP:      ip,
+			Country: country,
+		}
+		if cfg.VlessEnabled {
+			if p, err := sharelink.GenerateClientProfile(h.ID, h.Name, node, "vless", cfg); err == nil && p != nil {
+				profiles = append(profiles, p)
+			}
+		}
+		if cfg.SocksPort > 0 {
+			if p, err := sharelink.GenerateClientProfile(h.ID, h.Name, node, "socks5", cfg); err == nil && p != nil {
+				profiles = append(profiles, p)
+			}
+		}
+	}
+
+	text := sharelink.GenerateStructuredAllText(h.Name, h.Address, profiles)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(text))
+}
+
+// --- Daemon Control Plane Handlers (Host-Aware) ---
+
 func (s *Server) handleDaemonStatus(w http.ResponseWriter, r *http.Request) {
-	res, err := s.daemonClient.GetStatus()
+	mode, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusOK, map[string]interface{}{
+			"status":  "no_hosts",
+			"message": "No super-proxy hosts configured",
+		})
+		return
+	}
+
+	if mode == "all" {
+		hosts, _ := s.hostManager.ListHosts()
+		healthyCount := 0
+		for _, h := range hosts {
+			if h.Status == "healthy" {
+				healthyCount++
+			}
+		}
+		auth.SendJSON(w, http.StatusOK, map[string]interface{}{
+			"mode":          "all_hosts",
+			"total_hosts":   len(hosts),
+			"healthy_hosts": healthyCount,
+			"version":       "multi-host",
+			"server_id":     "all",
+			"uptime":        0,
+		})
+		return
+	}
+
+	res, err := client.GetStatus()
 	if err != nil {
 		auth.SendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
@@ -248,7 +628,22 @@ func (s *Server) handleDaemonStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDaemonSystem(w http.ResponseWriter, r *http.Request) {
-	res, err := s.daemonClient.GetSystem()
+	mode, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusOK, map[string]interface{}{
+			"CPU": 0.0, "Memory": 0.0, "Load": []float64{0, 0, 0},
+		})
+		return
+	}
+
+	if mode == "all" {
+		auth.SendJSON(w, http.StatusOK, map[string]interface{}{
+			"CPU": 0.0, "Memory": 0.0, "Load": []float64{0, 0, 0},
+		})
+		return
+	}
+
+	res, err := client.GetSystem()
 	if err != nil {
 		auth.SendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
@@ -257,7 +652,31 @@ func (s *Server) handleDaemonSystem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDaemonCurrentExits(w http.ResponseWriter, r *http.Request) {
-	res, err := s.daemonClient.GetCurrentExits()
+	mode, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusOK, []interface{}{})
+		return
+	}
+
+	if mode == "all" {
+		hosts, _ := s.hostManager.ListHosts()
+		var allExits []map[string]interface{}
+		for _, h := range hosts {
+			c, err := s.hostManager.GetClient(h.ID)
+			if err == nil {
+				exits, _ := c.GetCurrentExits()
+				for _, ex := range exits {
+					ex["host_id"] = h.ID
+					ex["host_name"] = h.Name
+					allExits = append(allExits, ex)
+				}
+			}
+		}
+		auth.SendJSON(w, http.StatusOK, allExits)
+		return
+	}
+
+	res, err := client.GetCurrentExits()
 	if err != nil {
 		auth.SendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
@@ -266,7 +685,15 @@ func (s *Server) handleDaemonCurrentExits(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleDaemonSlots(w http.ResponseWriter, r *http.Request) {
-	res, err := s.daemonClient.GetSlots()
+	_, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusOK, map[string]interface{}{
+			"slots": []interface{}{},
+		})
+		return
+	}
+
+	res, err := client.GetSlots()
 	if err != nil {
 		auth.SendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
@@ -275,7 +702,13 @@ func (s *Server) handleDaemonSlots(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDaemonPool(w http.ResponseWriter, r *http.Request) {
-	res, err := s.daemonClient.GetPool()
+	_, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusOK, map[string]int{"total": 0})
+		return
+	}
+
+	res, err := client.GetPool()
 	if err != nil {
 		auth.SendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
@@ -284,7 +717,13 @@ func (s *Server) handleDaemonPool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDaemonPoolQualified(w http.ResponseWriter, r *http.Request) {
-	res, err := s.daemonClient.GetPoolQualified()
+	_, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusOK, []interface{}{})
+		return
+	}
+
+	res, err := client.GetPoolQualified()
 	if err != nil {
 		auth.SendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
@@ -293,6 +732,12 @@ func (s *Server) handleDaemonPoolQualified(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleDaemonNodes(w http.ResponseWriter, r *http.Request) {
+	_, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusOK, map[string]interface{}{"total": 0, "nodes": []interface{}{}})
+		return
+	}
+
 	q := r.URL.Query()
 	country := q.Get("country")
 	status := q.Get("status")
@@ -300,7 +745,7 @@ func (s *Server) handleDaemonNodes(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
 
-	res, err := s.daemonClient.GetNodes(country, status, search, limit, offset)
+	res, err := client.GetNodes(country, status, search, limit, offset)
 	if err != nil {
 		auth.SendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
@@ -309,13 +754,19 @@ func (s *Server) handleDaemonNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDaemonNodeDetails(w http.ResponseWriter, r *http.Request) {
+	_, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusNotFound, map[string]string{"error": "host unavailable"})
+		return
+	}
+
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 4 {
 		http.Error(w, "Node ID required", http.StatusBadRequest)
 		return
 	}
 	nodeID := parts[3]
-	res, err := s.daemonClient.GetNodeDetails(nodeID)
+	res, err := client.GetNodeDetails(nodeID)
 	if err != nil {
 		auth.SendJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
@@ -324,8 +775,17 @@ func (s *Server) handleDaemonNodeDetails(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleDaemonSlotAction(w http.ResponseWriter, r *http.Request) {
+	mode, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "target host required"})
+		return
+	}
+	if mode == "all" {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "slot mutation cannot be executed in 'All Hosts' mode; please select a specific host"})
+		return
+	}
+
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	// Expected: /api/daemon/slots/{slot}/switch
 	if len(parts) < 5 || parts[4] != "switch" {
 		http.Error(w, "Invalid action. Use /api/daemon/slots/{slot}/switch", http.StatusBadRequest)
 		return
@@ -345,7 +805,7 @@ func (s *Server) handleDaemonSlotAction(w http.ResponseWriter, r *http.Request) 
 	}
 
 	sess := r.Context().Value(auth.SessionContextKey).(*auth.Session)
-	res, code, err := s.daemonClient.SwitchSlot(slot, req.NodeID)
+	res, code, err := client.SwitchSlot(slot, req.NodeID)
 	if err != nil {
 		audit.GlobalLogger.Log(sess.Username, string(sess.Role), "switch_slot", fmt.Sprintf("slot-%d -> %s", slot, req.NodeID), "FAILED", auth.GetClientIP(r), err.Error())
 		auth.SendJSON(w, code, map[string]string{"error": err.Error()})
@@ -357,13 +817,19 @@ func (s *Server) handleDaemonSlotAction(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleDaemonOperation(w http.ResponseWriter, r *http.Request) {
+	_, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusNotFound, map[string]string{"error": "host unavailable"})
+		return
+	}
+
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 4 {
 		http.Error(w, "Operation ID required", http.StatusBadRequest)
 		return
 	}
 	opID := parts[3]
-	res, err := s.daemonClient.GetOperation(opID)
+	res, err := client.GetOperation(opID)
 	if err != nil {
 		auth.SendJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
@@ -372,7 +838,15 @@ func (s *Server) handleDaemonOperation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDaemonMetrics(w http.ResponseWriter, r *http.Request) {
-	text, err := s.daemonClient.GetMetrics()
+	_, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("# No hosts configured\n"))
+		return
+	}
+
+	text, err := client.GetMetrics()
 	if err != nil {
 		auth.SendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
@@ -383,7 +857,18 @@ func (s *Server) handleDaemonMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDaemonRouting(w http.ResponseWriter, r *http.Request) {
-	res, err := s.daemonClient.GetRouting()
+	_, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusOK, map[string]interface{}{
+			"exits":               []interface{}{},
+			"slots":               map[string]interface{}{},
+			"dns_leak_protected":  true,
+			"ipv6_leak_protected": true,
+		})
+		return
+	}
+
+	res, err := client.GetRouting()
 	if err != nil {
 		auth.SendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
@@ -392,7 +877,16 @@ func (s *Server) handleDaemonRouting(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleShareProtocols(w http.ResponseWriter, r *http.Request) {
-	rawCfg, _ := s.daemonClient.GetClientConfig()
+	_, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusOK, map[string]interface{}{
+			"supported": []string{"socks5"},
+			"all":       []string{"vless", "socks5", "vmess", "trojan", "shadowsocks", "http"},
+		})
+		return
+	}
+
+	rawCfg, _ := client.GetClientConfig()
 	cfg := parseRuntimeConfig(rawCfg)
 	supported := s.shareService.GetSupportedProtocols(cfg)
 	auth.SendJSON(w, http.StatusOK, map[string]interface{}{
@@ -407,6 +901,12 @@ func (s *Server) handleShareGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "target host unavailable"})
+		return
+	}
+
 	var req struct {
 		NodeID   string `json:"node_id"`
 		Protocol string `json:"protocol"`
@@ -416,7 +916,7 @@ func (s *Server) handleShareGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nodeDetail, err := s.daemonClient.GetNodeDetails(req.NodeID)
+	nodeDetail, err := client.GetNodeDetails(req.NodeID)
 	if err != nil {
 		auth.SendJSON(w, http.StatusNotFound, map[string]string{"error": "node not found"})
 		return
@@ -428,7 +928,7 @@ func (s *Server) handleShareGenerate(w http.ResponseWriter, r *http.Request) {
 		Country: fmt.Sprintf("%v", nodeDetail["country"]),
 	}
 
-	rawCfg, _ := s.daemonClient.GetClientConfig()
+	rawCfg, _ := client.GetClientConfig()
 	cfg := parseRuntimeConfig(rawCfg)
 
 	res, err := s.shareService.Generate(node, req.Protocol, cfg)
@@ -446,6 +946,12 @@ func (s *Server) handleShareBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_, client, err := s.resolveTargetHost(r)
+	if err != nil {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "target host unavailable"})
+		return
+	}
+
 	var req struct {
 		Protocols []string `json:"protocols"`
 	}
@@ -454,7 +960,7 @@ func (s *Server) handleShareBatch(w http.ResponseWriter, r *http.Request) {
 		req.Protocols = []string{"vless", "socks5"}
 	}
 
-	exits, _ := s.daemonClient.GetCurrentExits()
+	exits, _ := client.GetCurrentExits()
 	var nodes []sharelink.NodeInfo
 	for _, exit := range exits {
 		ip, _ := exit["ip"].(string)
@@ -469,7 +975,7 @@ func (s *Server) handleShareBatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rawCfg, _ := s.daemonClient.GetClientConfig()
+	rawCfg, _ := client.GetClientConfig()
 	cfg := parseRuntimeConfig(rawCfg)
 
 	results := s.shareService.BatchGenerate(nodes, req.Protocols, cfg)
@@ -477,11 +983,10 @@ func (s *Server) handleShareBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	// Synthesize events from audit logs and recent slot activities
 	auditLogs := audit.GlobalLogger.GetEntries()
 	type EventItem struct {
 		Timestamp time.Time `json:"timestamp"`
-		Severity  string    `json:"severity"` // INFO, WARN, ERROR
+		Severity  string    `json:"severity"`
 		Component string    `json:"component"`
 		Event     string    `json:"event"`
 		Node      string    `json:"node,omitempty"`
@@ -509,17 +1014,45 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
-	// Provide clean, read-only configuration view
-	rawCfg, _ := s.daemonClient.GetClientConfig()
-	status, _ := s.daemonClient.GetStatus()
-	sys, _ := s.daemonClient.GetSystem()
+	_, client, err := s.resolveTargetHost(r)
+
+	var daemonInfo map[string]interface{}
+	var rawCfg map[string]interface{}
+
+	if err == nil && client != nil {
+		rawCfg, _ = client.GetClientConfig()
+		status, _ := client.GetStatus()
+		sys, _ := client.GetSystem()
+		daemonInfo = map[string]interface{}{
+			"status": status,
+			"system": sys,
+		}
+	} else {
+		daemonInfo = map[string]interface{}{
+			"status": "UNKNOWN",
+			"system": "UNKNOWN",
+		}
+	}
+
+	defHost, _ := s.hostManager.GetDefaultHost()
+	selectedHostName := "None"
+	selectedHostAddr := "None"
+	selectedHostAgent := "None"
+	if defHost != nil {
+		selectedHostName = defHost.Name
+		selectedHostAddr = defHost.Address
+		selectedHostAgent = defHost.AgentURL
+	}
 
 	settings := map[string]interface{}{
-		"daemon": map[string]interface{}{
-			"status":  status,
-			"system":  sys,
-			"api_url": os.Getenv("AGENT_API_URL"),
+		"manager": map[string]interface{}{
+			"version":            "2.0.0-multihost",
+			"listening_address":  s.addr,
+			"selected_host":      selectedHostName,
+			"selected_address":   selectedHostAddr,
+			"selected_agent_url": selectedHostAgent,
 		},
+		"daemon":       daemonInfo,
 		"xray_runtime": rawCfg,
 		"routing": map[string]interface{}{
 			"mode":               "policy_routing_fwmark",
@@ -529,10 +1062,11 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"failover_mechanism": "dynamic_draining_transaction",
 		},
 		"security": map[string]interface{}{
-			"auth_type":         "bcrypt_session_rbac",
-			"csrf_protection":   "ACTIVE",
-			"rate_limiting":     "ACTIVE",
-			"secret_redaction":  "STRICT",
+			"auth_type":        "bcrypt_sqlite_rbac",
+			"bootstrap_status": "HARDENED",
+			"csrf_protection":  "ACTIVE",
+			"rate_limiting":    "ACTIVE",
+			"secret_redaction": "STRICT",
 		},
 	}
 	auth.SendJSON(w, http.StatusOK, settings)
@@ -577,6 +1111,6 @@ func parseRuntimeConfig(raw map[string]interface{}) sharelink.RuntimeConfig {
 }
 
 func (s *Server) Start() error {
-	log.Printf("[WebManager] Starting control panel server on %s", s.addr)
+	log.Printf("[WebManager] Starting multi-host control panel server on %s", s.addr)
 	return http.ListenAndServe(s.addr, s.Handler())
 }

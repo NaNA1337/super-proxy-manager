@@ -21,16 +21,17 @@ const (
 )
 
 type Subscription struct {
-	ID          string      `json:"id"`
-	Name        string      `json:"name"`
-	TokenHash   string      `json:"-"`                   // DB only stores hash(token)
-	Profile     ProfileType `json:"profile"`             // active_only, all_nodes, region, protocol
-	RegionFilter string     `json:"region_filter,omitempty"` // e.g. "JP", "US"
-	ProtocolFilter string   `json:"protocol_filter,omitempty"` // e.g. "vless", "socks5"
-	IsRevoked   bool        `json:"is_revoked"`
-	CreatedAt   time.Time   `json:"created_at"`
-	ExpiresAt   *time.Time  `json:"expires_at,omitempty"`
-	CreatedBy   string      `json:"created_by"`
+	ID             string      `json:"id"`
+	Name           string      `json:"name"`
+	TokenHash      string      `json:"-"`                         // DB only stores hash(token)
+	HostID         string      `json:"host_id,omitempty"`         // Target Host ID or "all"
+	Profile        ProfileType `json:"profile"`                   // active_only, all_nodes, region, protocol
+	RegionFilter   string      `json:"region_filter,omitempty"`   // e.g. "JP", "US"
+	ProtocolFilter string      `json:"protocol_filter,omitempty"` // e.g. "vless", "socks5"
+	IsRevoked      bool        `json:"is_revoked"`
+	CreatedAt      time.Time   `json:"created_at"`
+	ExpiresAt      *time.Time  `json:"expires_at,omitempty"`
+	CreatedBy      string      `json:"created_by"`
 }
 
 type CreateSubscriptionResponse struct {
@@ -57,7 +58,7 @@ func HashToken(rawToken string) string {
 	return hex.EncodeToString(h[:])
 }
 
-func (s *Store) Create(name string, profile ProfileType, region, protocol, username string, durationDays int) (*Subscription, string, error) {
+func (s *Store) Create(name string, hostID string, profile ProfileType, region, protocol, username string, durationDays int) (*Subscription, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -72,6 +73,7 @@ func (s *Store) Create(name string, profile ProfileType, region, protocol, usern
 		ID:             uuid.New().String(),
 		Name:           name,
 		TokenHash:      tokenHash,
+		HostID:         hostID,
 		Profile:        profile,
 		RegionFilter:   region,
 		ProtocolFilter: protocol,

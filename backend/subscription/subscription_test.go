@@ -14,7 +14,7 @@ func TestSubscriptionLifecycle(t *testing.T) {
 	store := NewStore()
 
 	// 1. Create Subscription
-	sub, rawToken, err := store.Create("My Sub", ProfileAllActive, "", "", "admin", 30)
+	sub, rawToken, err := store.Create("My Sub", "host-1", ProfileAllActive, "", "", "admin", 30)
 	if err != nil {
 		t.Fatalf("failed to create subscription: %v", err)
 	}

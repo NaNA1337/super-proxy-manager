@@ -9,23 +9,28 @@ import {
   Radio,
   AlertCircle,
   Download,
-  CheckCircle2
+  CheckCircle2,
+  FileText,
+  FileCode,
+  Code2
 } from 'lucide-react';
-import { CurrentExit, ShareLinkResult } from '../types';
+import { CurrentExit, ShareLinkResult, ClientProfile } from '../types';
 import { QRCodeModal } from '../components/QRCodeModal';
-import { api } from '../api/client';
+import { api, getSelectedHostID } from '../api/client';
+
+type ClientFormatTab = 'vless' | 'clash' | 'singbox' | 'xray' | 'socks5';
 
 export const ShareLinks: React.FC = () => {
   const [exits, setExits] = useState<CurrentExit[]>([]);
   const [supportedProtos, setSupportedProtos] = useState<string[]>([]);
   const [allProtos, setAllProtos] = useState<string[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string>('');
-  const [selectedProtocol, setSelectedProtocol] = useState<string>('socks5');
-  const [generatedResult, setGeneratedResult] = useState<ShareLinkResult | null>(null);
-  const [batchResults, setBatchResults] = useState<ShareLinkResult[]>([]);
+  const [selectedProtocol, setSelectedProtocol] = useState<string>('vless');
+  const [activeFormatTab, setActiveFormatTab] = useState<ClientFormatTab>('vless');
+  const [clientProfiles, setClientProfiles] = useState<ClientProfile[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [copiedLink, setCopiedLink] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   // QR Modal State
   const [qrData, setQrData] = useState<{ isOpen: boolean; uri: string; title: string; protocol: string }>({
@@ -35,98 +40,131 @@ export const ShareLinks: React.FC = () => {
     protocol: '',
   });
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [exitsRes, protoRes] = await Promise.all([
-          api.getCurrentExits().catch(() => []),
-          api.getShareProtocols().catch(() => ({ supported: ['socks5'], all: ['socks5', 'vless'] })),
-        ]);
-        setExits(exitsRes || []);
-        setSupportedProtos(protoRes.supported || []);
-        setAllProtos(protoRes.all || []);
-        if (exitsRes && exitsRes.length > 0) {
-          setSelectedNodeId(exitsRes[0].node_id);
-        }
-      } catch (e) {
-        console.error('Failed to load protocols or exits', e);
+  const fetchData = async () => {
+    try {
+      const [exitsRes, protoRes] = await Promise.all([
+        api.getCurrentExits().catch(() => []),
+        api.getShareProtocols().catch(() => ({ supported: ['vless', 'socks5'], all: ['vless', 'socks5', 'vmess', 'trojan', 'shadowsocks', 'http'] })),
+      ]);
+      setExits(exitsRes || []);
+      setSupportedProtos(protoRes.supported || []);
+      setAllProtos(protoRes.all || []);
+      if (exitsRes && exitsRes.length > 0) {
+        setSelectedNodeId(exitsRes[0].node_id);
       }
-    };
+
+      // Load client profiles for current host if available
+      const hostID = getSelectedHostID();
+      if (hostID && hostID !== 'all') {
+        const profiles = await api.getHostClientLinks(hostID).catch(() => []);
+        setClientProfiles(profiles || []);
+      }
+    } catch (e) {
+      console.error('Failed to load protocols or exits', e);
+    }
+  };
+
+  useEffect(() => {
     fetchData();
   }, []);
 
-  const handleGenerate = async () => {
-    if (!selectedNodeId || !selectedProtocol) return;
-    setLoading(true);
-    setError('');
-    setGeneratedResult(null);
-
+  const handleCopy = async (text: string, key: string) => {
     try {
-      const res = await api.generateShareLink(selectedNodeId, selectedProtocol);
-      setGeneratedResult(res);
-    } catch (err: unknown) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError('Generation failed');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleBatchGenerate = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const res = await api.batchGenerateShareLinks(supportedProtos);
-      setBatchResults(res || []);
-    } catch (err: unknown) {
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError('Batch generation failed');
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCopy = async (uri: string) => {
-    try {
-      await navigator.clipboard.writeText(uri);
-      setCopiedLink(uri);
-      setTimeout(() => setCopiedLink(null), 2000);
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(null), 2000);
     } catch (e) {
       console.error('Failed to copy', e);
     }
   };
 
-  const handleDownloadAll = () => {
-    const activeURIs = batchResults.filter((r) => r.supported && r.uri).map((r) => r.uri).join('\n');
-    const blob = new Blob([activeURIs], { type: 'text/plain;charset=utf-8' });
+  const handleDownloadFile = (content: string, filename: string, type = 'text/plain;charset=utf-8') => {
+    const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `super-proxy-sharelinks-${new Date().toISOString().slice(0, 10)}.txt`;
+    link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
   };
 
+  const handleCopyAllStructured = async () => {
+    const hostID = getSelectedHostID();
+    if (!hostID || hostID === 'all') {
+      alert('Please select a specific host from the top navbar to export all client links.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const text = await api.getHostClientLinksAll(hostID);
+      await handleCopy(text, 'copy-all-structured');
+      alert('All client links (VLESS, Clash Meta, sing-box, Xray, SOCKS5) copied to clipboard!');
+    } catch (err: any) {
+      alert(`Failed to export all client links: ${err.safeMessage || err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDownloadAllStructured = async () => {
+    const hostID = getSelectedHostID();
+    if (!hostID || hostID === 'all') {
+      alert('Please select a specific host from the top navbar to export all client links.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const text = await api.getHostClientLinksAll(hostID);
+      handleDownloadFile(text, `super-proxy-clients-${hostID}-${new Date().toISOString().slice(0, 10)}.txt`);
+    } catch (err: any) {
+      alert(`Failed to export: ${err.safeMessage || err.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Find active profile for selected node
+  const activeProfile = clientProfiles.find((p) => p.node_id === selectedNodeId) || clientProfiles[0];
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-xl font-bold text-white tracking-wide">CLIENT SHARELINK GENERATOR</h1>
-        <p className="text-xs text-slate-400">
-          Export standards-compliant proxy connection links (VLESS Reality, SOCKS5, VMess) with pure client-side QR generation
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-bold text-white tracking-wide font-mono flex items-center gap-2">
+            <Share2 className="w-5 h-5 text-cyan-400" />
+            CLIENT SHARELINKS & MULTI-FORMAT EXPORTERS
+          </h1>
+          <p className="text-xs text-slate-400 font-mono mt-1">
+            Read from active daemon runtime. Pure client configurations for VLESS Reality, Clash Meta, sing-box, and Xray.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleCopyAllStructured}
+            disabled={loading}
+            className="px-3.5 py-2 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-mono text-xs font-bold rounded-lg shadow-lg shadow-cyan-950 transition flex items-center gap-1.5"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            {copiedKey === 'copy-all-structured' ? 'Copied All!' : 'Copy All Client Links'}
+          </button>
+          <button
+            onClick={handleDownloadAllStructured}
+            disabled={loading}
+            className="px-3 py-2 bg-slate-900 border border-slate-700 hover:bg-slate-800 text-slate-300 font-mono text-xs rounded-lg transition flex items-center gap-1.5"
+            title="Download formatted text file"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Download
+          </button>
+        </div>
       </div>
 
       {/* Protocol Support Status Grid */}
       <div className="p-4 glass-panel rounded-xl border border-slate-800 space-y-2 font-mono text-xs">
         <span className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">
-          BACKEND RUNTIME PROTOCOL VERIFICATION
+          DAEMON RUNTIME PROTOCOL STATUS
         </span>
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 pt-1">
           {allProtos.map((p) => {
@@ -146,7 +184,7 @@ export const ShareLinks: React.FC = () => {
                     isSupported ? 'bg-emerald-900 text-emerald-200' : 'bg-slate-800 text-slate-400'
                   }`}
                 >
-                  {isSupported ? 'ACTIVE' : 'NOT CONFIGURED'}
+                  {isSupported ? 'SUPPORTED' : 'NOT SUPPORTED'}
                 </span>
               </div>
             );
@@ -154,27 +192,15 @@ export const ShareLinks: React.FC = () => {
         </div>
       </div>
 
-      {/* Generator Control Card */}
+      {/* Multi-Client Format Explorer */}
       <div className="glass-panel p-6 rounded-xl border border-slate-800 space-y-5">
-        <h3 className="text-sm font-bold text-white font-mono uppercase tracking-wider">
-          TARGET NODE & PROTOCOL SELECTOR
-        </h3>
-
-        {error && (
-          <div className="p-3 rounded-lg bg-rose-950/60 border border-rose-800 text-rose-300 text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-            <span>{error}</span>
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Node Selector */}
-          <div>
-            <label className="block text-xs font-mono text-slate-400 mb-2">Active Egress Slot / Node:</label>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div className="flex items-center gap-3">
+            <label className="text-xs font-mono text-slate-400 uppercase font-bold">Target Exit Node:</label>
             <select
               value={selectedNodeId}
               onChange={(e) => setSelectedNodeId(e.target.value)}
-              className="w-full px-3 py-2.5 bg-noc-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-none focus:border-cyan-500"
+              className="px-3 py-1.5 bg-noc-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-none focus:border-cyan-500"
             >
               {exits.length === 0 ? (
                 <option value="">No active egress nodes</option>
@@ -188,178 +214,206 @@ export const ShareLinks: React.FC = () => {
             </select>
           </div>
 
-          {/* Protocol Selector */}
-          <div>
-            <label className="block text-xs font-mono text-slate-400 mb-2">Client Proxy Protocol:</label>
-            <select
-              value={selectedProtocol}
-              onChange={(e) => setSelectedProtocol(e.target.value)}
-              className="w-full px-3 py-2.5 bg-noc-900 border border-slate-700 rounded-lg text-xs font-mono text-white focus:outline-none focus:border-cyan-500"
-            >
-              {allProtos.map((p) => {
-                const supported = supportedProtos.includes(p);
-                return (
-                  <option key={p} value={p}>
-                    {p.toUpperCase()} {supported ? '(Backend Ready)' : '(Not Active in Xray)'}
-                  </option>
-                );
-              })}
-            </select>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-3 pt-2">
-          <button
-            onClick={handleGenerate}
-            disabled={loading || !selectedNodeId}
-            className="px-5 py-2.5 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-semibold text-xs rounded-lg shadow-lg shadow-cyan-950/40 transition disabled:opacity-40"
-          >
-            {loading ? 'Generating...' : 'Generate ShareLink'}
-          </button>
-
-          <button
-            onClick={handleBatchGenerate}
-            disabled={loading || exits.length === 0}
-            className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs rounded-lg transition disabled:opacity-40"
-          >
-            Batch Generate All Active Nodes
-          </button>
-        </div>
-      </div>
-
-      {/* Generated Result Card */}
-      {generatedResult && (
-        <div className="glass-panel p-5 rounded-xl border border-cyan-500/40 glow-cyan space-y-3 font-mono text-xs">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-            <span className="font-bold text-white uppercase flex items-center gap-2">
-              <span className="text-cyan-400 font-bold">[{generatedResult.protocol.toUpperCase()}]</span>
-              <span>{generatedResult.description}</span>
-            </span>
-            <span
-              className={`text-[10px] px-2 py-0.5 rounded font-bold ${
-                generatedResult.supported
-                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/50'
-                  : 'bg-rose-950 text-rose-300 border border-rose-800'
+          {/* Client Tabs */}
+          <div className="flex items-center gap-1.5 bg-slate-900/80 p-1 rounded-lg border border-slate-800 font-mono text-xs">
+            <button
+              onClick={() => setActiveFormatTab('vless')}
+              className={`px-3 py-1.5 rounded-md font-bold transition ${
+                activeFormatTab === 'vless'
+                  ? 'bg-cyan-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              {generatedResult.supported ? 'VALIDATED' : 'UNSUPPORTED'}
-            </span>
-          </div>
-
-          {generatedResult.uri ? (
-            <>
-              <div className="p-3 bg-noc-950 rounded-lg border border-slate-800 text-slate-300 break-all select-all">
-                {generatedResult.uri}
-              </div>
-
-              <div className="flex gap-3 pt-1">
-                <button
-                  onClick={() => handleCopy(generatedResult.uri!)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white font-semibold rounded-lg transition"
-                >
-                  {copiedLink === generatedResult.uri ? (
-                    <>
-                      <Check className="w-3.5 h-3.5" /> Copied!
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5" /> Copy Link
-                    </>
-                  )}
-                </button>
-
-                <button
-                  onClick={() =>
-                    setQrData({
-                      isOpen: true,
-                      uri: generatedResult.uri!,
-                      title: `${generatedResult.country} Exit`,
-                      protocol: generatedResult.protocol,
-                    })
-                  }
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold rounded-lg transition"
-                >
-                  <QrCode className="w-3.5 h-3.5" /> View QR Code
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="p-3 rounded-lg bg-amber-950/40 border border-amber-800/40 text-amber-300">
-              {generatedResult.error || 'Protocol cannot be generated with current backend settings.'}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Batch Results Table */}
-      {batchResults.length > 0 && (
-        <div className="glass-panel p-5 rounded-xl border border-slate-800 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-white font-mono uppercase tracking-wider">
-              BATCH GENERATED CLIENT PROXIES ({batchResults.length})
-            </h3>
+              VLESS URI
+            </button>
             <button
-              onClick={handleDownloadAll}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-cyan-400 font-mono text-xs rounded-lg transition"
+              onClick={() => setActiveFormatTab('clash')}
+              className={`px-3 py-1.5 rounded-md font-bold transition ${
+                activeFormatTab === 'clash'
+                  ? 'bg-cyan-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
             >
-              <Download className="w-3.5 h-3.5" />
-              <span>Download Text File</span>
+              Clash Meta
+            </button>
+            <button
+              onClick={() => setActiveFormatTab('singbox')}
+              className={`px-3 py-1.5 rounded-md font-bold transition ${
+                activeFormatTab === 'singbox'
+                  ? 'bg-cyan-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              sing-box
+            </button>
+            <button
+              onClick={() => setActiveFormatTab('xray')}
+              className={`px-3 py-1.5 rounded-md font-bold transition ${
+                activeFormatTab === 'xray'
+                  ? 'bg-cyan-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Xray JSON
+            </button>
+            <button
+              onClick={() => setActiveFormatTab('socks5')}
+              className={`px-3 py-1.5 rounded-md font-bold transition ${
+                activeFormatTab === 'socks5'
+                  ? 'bg-cyan-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              SOCKS5
             </button>
           </div>
+        </div>
 
-          <div className="space-y-2">
-            {batchResults.map((item, idx) => (
-              <div
-                key={idx}
-                className="p-3 rounded-lg bg-noc-900 border border-slate-800 font-mono text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-              >
-                <div>
-                  <div className="flex items-center gap-2 font-bold text-white">
-                    <span className="text-cyan-400">[{item.protocol.toUpperCase()}]</span>
-                    <span>{item.country}</span>
-                    <span className="text-slate-400 font-normal">({item.node_id})</span>
-                  </div>
-                  {item.uri ? (
-                    <div className="text-[11px] text-slate-400 truncate max-w-xl mt-1">
-                      {item.uri}
-                    </div>
-                  ) : (
-                    <div className="text-[11px] text-amber-400 mt-1">
-                      {item.error || 'Not supported by backend runtime'}
-                    </div>
-                  )}
-                </div>
-
-                {item.uri && (
-                  <div className="flex items-center gap-2 shrink-0">
+        {/* Tab Content Display */}
+        {activeProfile ? (
+          <div className="space-y-4 font-mono text-xs">
+            {activeFormatTab === 'vless' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-slate-400">
+                  <span className="font-bold text-white">Standard VLESS Reality Link (v2rayN, v2rayNG, NekoBox)</span>
+                  <div className="flex items-center gap-2">
                     <button
-                      onClick={() => handleCopy(item.uri!)}
-                      className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded transition"
-                      title="Copy"
+                      onClick={() => handleCopy(activeProfile.uri, 'vless-uri')}
+                      className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-bold transition flex items-center gap-1.5"
                     >
-                      {copiedLink === item.uri ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                      {copiedKey === 'vless-uri' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>Copy URI</span>
                     </button>
                     <button
                       onClick={() =>
                         setQrData({
                           isOpen: true,
-                          uri: item.uri!,
-                          title: `${item.country} (${item.protocol.toUpperCase()})`,
-                          protocol: item.protocol,
+                          uri: activeProfile.uri,
+                          title: activeProfile.name,
+                          protocol: 'VLESS Reality',
                         })
                       }
-                      className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded transition"
-                      title="QR Code"
+                      className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold transition flex items-center gap-1.5"
                     >
-                      <QrCode className="w-4 h-4" />
+                      <QrCode className="w-3.5 h-3.5" />
+                      <span>QR Code</span>
                     </button>
                   </div>
-                )}
+                </div>
+                <div className="p-4 bg-noc-950 rounded-xl border border-slate-800 text-slate-300 break-all select-all leading-relaxed">
+                  {activeProfile.uri}
+                </div>
               </div>
-            ))}
+            )}
+
+            {activeFormatTab === 'clash' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-slate-400">
+                  <span className="font-bold text-white">Clash Meta / Mihomo Proxy Snippet (YAML)</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleCopy(activeProfile.clash_config || '', 'clash-yaml')}
+                      className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-bold transition flex items-center gap-1.5"
+                    >
+                      {copiedKey === 'clash-yaml' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>Copy YAML</span>
+                    </button>
+                    <button
+                      onClick={() => handleDownloadFile(activeProfile.clash_config || '', `${activeProfile.name}-clash.yaml`)}
+                      className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold transition flex items-center gap-1.5"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download</span>
+                    </button>
+                  </div>
+                </div>
+                <pre className="p-4 bg-noc-950 rounded-xl border border-slate-800 text-cyan-300 overflow-x-auto leading-relaxed">
+                  {activeProfile.clash_config || '# Not supported'}
+                </pre>
+              </div>
+            )}
+
+            {activeFormatTab === 'singbox' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-slate-400">
+                  <span className="font-bold text-white">sing-box Outbound Object (JSON)</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleCopy(JSON.stringify(activeProfile.singbox_config, null, 2), 'singbox-json')}
+                      className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-bold transition flex items-center gap-1.5"
+                    >
+                      {copiedKey === 'singbox-json' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>Copy JSON</span>
+                    </button>
+                    <button
+                      onClick={() => handleDownloadFile(JSON.stringify(activeProfile.singbox_config, null, 2), `${activeProfile.name}-singbox.json`)}
+                      className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold transition flex items-center gap-1.5"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download</span>
+                    </button>
+                  </div>
+                </div>
+                <pre className="p-4 bg-noc-950 rounded-xl border border-slate-800 text-amber-300 overflow-x-auto leading-relaxed">
+                  {JSON.stringify(activeProfile.singbox_config, null, 2)}
+                </pre>
+              </div>
+            )}
+
+            {activeFormatTab === 'xray' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-slate-400">
+                  <span className="font-bold text-white">Xray-core Outbound Object (JSON)</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleCopy(JSON.stringify(activeProfile.xray_config, null, 2), 'xray-json')}
+                      className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-bold transition flex items-center gap-1.5"
+                    >
+                      {copiedKey === 'xray-json' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>Copy JSON</span>
+                    </button>
+                    <button
+                      onClick={() => handleDownloadFile(JSON.stringify(activeProfile.xray_config, null, 2), `${activeProfile.name}-xray.json`)}
+                      className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold transition flex items-center gap-1.5"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download</span>
+                    </button>
+                  </div>
+                </div>
+                <pre className="p-4 bg-noc-950 rounded-xl border border-slate-800 text-blue-300 overflow-x-auto leading-relaxed">
+                  {JSON.stringify(activeProfile.xray_config, null, 2)}
+                </pre>
+              </div>
+            )}
+
+            {activeFormatTab === 'socks5' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-slate-400">
+                  <span className="font-bold text-white">Direct SOCKS5 Inbound URI</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleCopy(activeProfile.uri, 'socks5-uri')}
+                      className="px-3 py-1.5 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-bold transition flex items-center gap-1.5"
+                    >
+                      {copiedKey === 'socks5-uri' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>Copy URI</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="p-4 bg-noc-950 rounded-xl border border-slate-800 text-slate-300 break-all select-all">
+                  {activeProfile.uri}
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="py-8 text-center text-slate-500 font-mono text-xs space-y-2">
+            <Radio className="w-6 h-6 mx-auto text-slate-600 animate-pulse" />
+            <p>Select a host and node to inspect live exported client links.</p>
+          </div>
+        )}
+      </div>
 
       {/* QR Code Modal */}
       <QRCodeModal

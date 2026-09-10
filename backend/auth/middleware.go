@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/NaNA1337/super-proxy-manager/backend/db"
 	"golang.org/x/time/rate"
 )
 
@@ -91,40 +92,52 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 }
 
 // SessionMiddleware extracts and injects session into context
-func SessionMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var token string
+func SessionMiddleware(database *db.DB) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var token string
 
-		// Check Cookie first
-		if cookie, err := r.Cookie(SessionCookieName); err == nil && cookie.Value != "" {
-			token = cookie.Value
-		} else if authHeader := r.Header.Get("Authorization"); authHeader != "" {
-			// Fallback to Bearer token
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
-				token = parts[1]
+			// Check Cookie first
+			if cookie, err := r.Cookie(SessionCookieName); err == nil && cookie.Value != "" {
+				token = cookie.Value
+			} else if authHeader := r.Header.Get("Authorization"); authHeader != "" {
+				// Fallback to Bearer token
+				parts := strings.SplitN(authHeader, " ", 2)
+				if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+					token = parts[1]
+				}
 			}
-		}
 
-		if token != "" {
-			if sess, ok := GetSession(token); ok {
-				ctx := context.WithValue(r.Context(), SessionContextKey, sess)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
+			if token != "" {
+				if sess, ok := GetSession(database, token); ok {
+					ctx := context.WithValue(r.Context(), SessionContextKey, sess)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
 			}
-		}
 
-		next.ServeHTTP(w, r)
-	})
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
-// RequireAuth enforces authenticated session
+// RequireAuth enforces authenticated session and checks forced password change
 func RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess, ok := r.Context().Value(SessionContextKey).(*Session)
 		if !ok || sess == nil {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
+		}
+
+		// If user must change password, block all routes except change-password, me, logout
+		if sess.MustChangePassword {
+			path := r.URL.Path
+			allowed := path == "/api/auth/change-password" || path == "/api/auth/me" || path == "/api/auth/logout"
+			if !allowed {
+				http.Error(w, `{"error":"password_change_required"}`, http.StatusForbidden)
+				return
+			}
 		}
 
 		// Enforce CSRF on mutating requests
@@ -140,13 +153,21 @@ func RequireAuth(next http.Handler) http.Handler {
 	})
 }
 
-// RequireAdmin enforces admin role
+// RequireAdmin enforces admin role and checks forced password change
 func RequireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sess, ok := r.Context().Value(SessionContextKey).(*Session)
 		if !ok || sess == nil {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
+		}
+		if sess.MustChangePassword {
+			path := r.URL.Path
+			allowed := path == "/api/auth/change-password" || path == "/api/auth/me" || path == "/api/auth/logout"
+			if !allowed {
+				http.Error(w, `{"error":"password_change_required"}`, http.StatusForbidden)
+				return
+			}
 		}
 		if sess.Role != RoleAdmin {
 			http.Error(w, `{"error":"forbidden: admin access required"}`, http.StatusForbidden)

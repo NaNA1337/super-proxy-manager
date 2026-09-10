@@ -2,10 +2,50 @@ export type Role = 'admin' | 'readonly';
 
 export interface UserSession {
   authenticated: boolean;
+  must_change_password?: boolean;
   username?: string;
   role?: Role;
   csrf_token?: string;
   expires_at?: string;
+}
+
+export interface Host {
+  id: string;
+  name: string;
+  address: string;
+  agent_url: string;
+  enabled: boolean;
+  status: string; // 'healthy' | 'degraded' | 'offline' | 'pending'
+  last_seen?: string;
+  version: string;
+  region: string;
+  is_default: boolean;
+  active_slots?: number;
+  latency_ms?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TestConnectionResult {
+  success: boolean;
+  status: string;
+  version?: string;
+  region?: string;
+  latency_ms?: number;
+  error?: string;
+}
+
+export interface ClientProfile {
+  host_id: string;
+  host_name: string;
+  node_id: string;
+  name: string;
+  protocol: string;
+  uri: string;
+  xray_config?: Record<string, unknown>;
+  singbox_config?: Record<string, unknown>;
+  clash_config?: string;
+  supported_clients: string[];
 }
 
 export interface DaemonStatus {
@@ -36,6 +76,8 @@ export interface CurrentExit {
   score: number;
   throughput: number;
   last_check: string;
+  host_id?: string;
+  host_name?: string;
 }
 
 export interface SlotsOverview {
@@ -135,6 +177,7 @@ export interface ShareLinkResult {
 export interface Subscription {
   id: string;
   name: string;
+  host_id?: string;
   profile: 'active_only' | 'all_nodes' | 'region' | 'protocol';
   region_filter?: string;
   protocol_filter?: string;

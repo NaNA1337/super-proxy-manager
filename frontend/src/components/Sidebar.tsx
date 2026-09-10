@@ -9,11 +9,13 @@ import {
   Share2,
   Rss,
   Settings,
-  ClipboardList
+  ClipboardList,
+  Network
 } from 'lucide-react';
 
 export type TabId =
   | 'dashboard'
+  | 'hosts'
   | 'nodes'
   | 'slots'
   | 'routing'
@@ -32,12 +34,13 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onTabChange }) => {
   const navItems: { id: TabId; label: string; icon: React.ReactNode; badge?: string }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard className="w-4 h-4" /> },
+    { id: 'hosts', label: 'Hosts Fleet', icon: <Network className="w-4 h-4" />, badge: 'MULTI' },
     { id: 'nodes', label: 'Nodes', icon: <Server className="w-4 h-4" /> },
     { id: 'slots', label: 'Slots Manager', icon: <Layers className="w-4 h-4" /> },
     { id: 'routing', label: 'Policy Routing', icon: <GitFork className="w-4 h-4" /> },
     { id: 'metrics', label: 'Prom Metrics', icon: <BarChart3 className="w-4 h-4" /> },
     { id: 'events', label: 'Events & Logs', icon: <ScrollText className="w-4 h-4" /> },
-    { id: 'share-links', label: 'Share Links', icon: <Share2 className="w-4 h-4" />, badge: 'VLESS' },
+    { id: 'share-links', label: 'Share Links', icon: <Share2 className="w-4 h-4" />, badge: 'CLIENTS' },
     { id: 'subscriptions', label: 'Subscriptions', icon: <Rss className="w-4 h-4" /> },
     { id: 'settings', label: 'Settings', icon: <Settings className="w-4 h-4" /> },
     { id: 'audit', label: 'Audit Log', icon: <ClipboardList className="w-4 h-4" /> },

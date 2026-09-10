@@ -12,10 +12,14 @@ import {
   CreateSubResponse,
   AuditLog,
   EventItem,
-  RoutingOverview
+  RoutingOverview,
+  Host,
+  TestConnectionResult,
+  ClientProfile
 } from '../types';
 
 let currentCSRFToken = '';
+let selectedHostID = localStorage.getItem('spm_selected_host_id') || '';
 
 export function setCSRFToken(token: string) {
   currentCSRFToken = token;
@@ -23,6 +27,19 @@ export function setCSRFToken(token: string) {
 
 export function getCSRFToken(): string {
   return currentCSRFToken;
+}
+
+export function setSelectedHostID(hostID: string) {
+  selectedHostID = hostID;
+  if (hostID) {
+    localStorage.setItem('spm_selected_host_id', hostID);
+  } else {
+    localStorage.removeItem('spm_selected_host_id');
+  }
+}
+
+export function getSelectedHostID(): string {
+  return selectedHostID;
 }
 
 export class APIError extends Error {
@@ -39,6 +56,10 @@ export class APIError extends Error {
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers || {});
   headers.set('Accept', 'application/json');
+
+  if (selectedHostID) {
+    headers.set('X-Host-ID', selectedHostID);
+  }
 
   if (options.method && ['POST', 'PUT', 'DELETE'].includes(options.method.toUpperCase())) {
     if (currentCSRFToken) {
@@ -81,9 +102,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  // Auth
+  // Auth & Bootstrap
   login: async (username: string, password: string) => {
-    const res = await request<{ username: string; role: string; csrf_token: string }>('/api/auth/login', {
+    const res = await request<{
+      username: string;
+      role: string;
+      csrf_token: string;
+      must_change_password?: boolean;
+    }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     });
@@ -102,8 +128,54 @@ export const api = {
     }
     return res;
   },
+  changePassword: async (current_password: string, new_password: string, confirm_password: string) => {
+    const res = await request<{ status: string; must_change_password: boolean; csrf_token: string }>(
+      '/api/auth/change-password',
+      {
+        method: 'POST',
+        body: JSON.stringify({ current_password, new_password, confirm_password }),
+      }
+    );
+    if (res.csrf_token) {
+      setCSRFToken(res.csrf_token);
+    }
+    return res;
+  },
+  getBootstrapStatus: () => request<{ initial_setup_required: boolean }>('/api/auth/bootstrap-status'),
 
-  // Daemon telemetry
+  // Multi-Host Management
+  listHosts: () => request<Host[]>('/api/hosts'),
+  createHost: (data: { name: string; address: string; agent_url: string; token: string; is_default?: boolean }) =>
+    request<Host>('/api/hosts', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateHost: (id: string, data: { name: string; address: string; agent_url: string; token?: string; enabled: boolean }) =>
+    request<Host>(`/api/hosts/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteHost: (id: string) =>
+    request<{ status: string }>(`/api/hosts/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  testHostPreSave: (data: { agent_url: string; token: string }) =>
+    request<TestConnectionResult>('/api/hosts/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  testHost: (id: string) =>
+    request<TestConnectionResult>(`/api/hosts/${encodeURIComponent(id)}/test`, {
+      method: 'POST',
+    }),
+  setDefaultHost: (id: string) =>
+    request<{ status: string }>(`/api/hosts/${encodeURIComponent(id)}/default`, {
+      method: 'POST',
+    }),
+  getHostClientLinks: (id: string) => request<ClientProfile[]>(`/api/hosts/${encodeURIComponent(id)}/client-links`),
+  getHostClientLinksAll: (id: string) => request<string>(`/api/hosts/${encodeURIComponent(id)}/client-links/all`),
+
+  // Daemon telemetry (Host-Aware)
   getStatus: () => request<DaemonStatus>('/api/daemon/status'),
   getSystem: () => request<SystemStats>('/api/daemon/system'),
   getCurrentExits: () => request<CurrentExit[]>('/api/daemon/current-exits'),
@@ -147,7 +219,7 @@ export const api = {
 
   // Subscriptions
   listSubscriptions: () => request<Subscription[]>('/api/subscriptions'),
-  createSubscription: (data: { name: string; profile: string; region?: string; protocol?: string; duration_days?: number }) =>
+  createSubscription: (data: { name: string; host_id?: string; profile: string; region?: string; protocol?: string; duration_days?: number }) =>
     request<CreateSubResponse>('/api/subscriptions', {
       method: 'POST',
       body: JSON.stringify(data),

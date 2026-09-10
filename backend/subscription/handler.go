@@ -13,26 +13,48 @@ import (
 	"github.com/NaNA1337/super-proxy-manager/backend/sharelink"
 )
 
+type ClientProviderFunc func(hostID string) (*proxy.DaemonClient, error)
+
 type Handler struct {
-	store        *Store
-	daemonClient *proxy.DaemonClient
-	shareService *sharelink.Service
+	store          *Store
+	clientProvider ClientProviderFunc
+	legacyClient   *proxy.DaemonClient
+	shareService   *sharelink.Service
+}
+
+func NewHandlerWithProvider(store *Store, provider ClientProviderFunc, ss *sharelink.Service) *Handler {
+	return &Handler{
+		store:          store,
+		clientProvider: provider,
+		shareService:   ss,
+	}
 }
 
 func NewHandler(store *Store, client *proxy.DaemonClient, ss *sharelink.Service) *Handler {
 	return &Handler{
 		store:        store,
-		daemonClient: client,
+		legacyClient: client,
 		shareService: ss,
 	}
 }
 
+func (h *Handler) getClient(hostID string) (*proxy.DaemonClient, error) {
+	if h.clientProvider != nil {
+		return h.clientProvider(hostID)
+	}
+	if h.legacyClient != nil {
+		return h.legacyClient, nil
+	}
+	return nil, fmt.Errorf("no client available")
+}
+
 type CreateSubRequest struct {
-	Name         string              `json:"name"`
-	Profile      ProfileType         `json:"profile"`
-	Region       string              `json:"region"`
-	Protocol     string              `json:"protocol"`
-	DurationDays int                 `json:"duration_days"`
+	Name         string      `json:"name"`
+	HostID       string      `json:"host_id"`
+	Profile      ProfileType `json:"profile"`
+	Region       string      `json:"region"`
+	Protocol     string      `json:"protocol"`
+	DurationDays int         `json:"duration_days"`
 }
 
 func (h *Handler) HandleCreateSubscription(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +79,7 @@ func (h *Handler) HandleCreateSubscription(w http.ResponseWriter, r *http.Reques
 		req.Profile = ProfileAllActive
 	}
 
-	sub, rawToken, err := h.store.Create(req.Name, req.Profile, req.Region, req.Protocol, username, req.DurationDays)
+	sub, rawToken, err := h.store.Create(req.Name, req.HostID, req.Profile, req.Region, req.Protocol, username, req.DurationDays)
 	if err != nil {
 		auth.SendJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -131,9 +153,15 @@ func (h *Handler) HandleGetSubscription(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	client, err := h.getClient(sub.HostID)
+	if err != nil {
+		http.Error(w, "Target host client unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
 	// 1. Fetch current exits and candidate nodes
 	var candidateNodes []sharelink.NodeInfo
-	exits, _ := h.daemonClient.GetCurrentExits()
+	exits, _ := client.GetCurrentExits()
 	for _, exit := range exits {
 		ip, _ := exit["ip"].(string)
 		country, _ := exit["country"].(string)
@@ -149,116 +177,117 @@ func (h *Handler) HandleGetSubscription(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// If profile is all_nodes or region, add qualified nodes
-	if sub.Profile == ProfileAllNodes || sub.Profile == ProfileRegion {
-		qualified, _ := h.daemonClient.GetPoolQualified()
+	// Fallback to pool qualified if no active exits or profile is AllNodes
+	if len(candidateNodes) == 0 || sub.Profile == ProfileAllNodes {
+		qualified, _ := client.GetPoolQualified()
 		for _, q := range qualified {
 			ip, _ := q["ip"].(string)
 			country, _ := q["country"].(string)
-			id, _ := q["id"].(string)
-			status, _ := q["status"].(string)
+			nodeID, _ := q["id"].(string)
 			if ip != "" {
 				candidateNodes = append(candidateNodes, sharelink.NodeInfo{
-					ID:      id,
+					ID:      nodeID,
 					IP:      ip,
 					Country: country,
-					Status:  status,
 				})
 			}
 		}
 	}
 
-	// Fetch runtime config
-	rawCfg, _ := h.daemonClient.GetClientConfig()
-	cfg := sharelink.RuntimeConfig{}
-	if rawCfg != nil {
-		if socks, ok := rawCfg["socks"].(map[string]interface{}); ok {
-			cfg.SocksAddress, _ = socks["address"].(string)
-			if port, ok := socks["port"].(float64); ok {
-				cfg.SocksPort = int(port)
-			} else if port, ok := socks["port"].(int); ok {
-				cfg.SocksPort = port
-			}
-		}
-		if vless, ok := rawCfg["vless"].(map[string]interface{}); ok {
-			cfg.VlessEnabled = true
-			cfg.VlessAddress, _ = vless["address"].(string)
-			cfg.VlessUUID, _ = vless["uuid"].(string)
-			cfg.VlessSecurity, _ = vless["security"].(string)
-			cfg.VlessSNI, _ = vless["server_name"].(string)
-			cfg.VlessFingerprint, _ = vless["fingerprint"].(string)
-			cfg.VlessPublicKey, _ = vless["public_key"].(string)
-			cfg.VlessShortID, _ = vless["short_id"].(string)
-			cfg.VlessFlow, _ = vless["flow"].(string)
-			cfg.VlessType, _ = vless["type"].(string)
-			if port, ok := vless["port"].(float64); ok {
-				cfg.VlessPort = int(port)
-			}
-		}
-		if protos, ok := rawCfg["protocols"].([]interface{}); ok {
-			for _, p := range protos {
-				if s, ok := p.(string); ok {
-					cfg.SupportedProtocols = append(cfg.SupportedProtocols, s)
-				}
-			}
-		}
-	}
+	// 2. Fetch runtime config
+	rawCfg, _ := client.GetClientConfig()
+	cfg := parseRuntimeConfig(rawCfg)
 
-	var supportedProtocols []string
-	if sub.ProtocolFilter != "" {
-		supportedProtocols = []string{sub.ProtocolFilter}
-	} else {
-		supportedProtocols = h.shareService.GetSupportedProtocols(cfg)
-		if len(supportedProtocols) == 0 {
-			supportedProtocols = []string{"socks5"}
-		}
-	}
-
-	var uris []string
-	seen := make(map[string]bool)
-
+	// 3. Filter candidates based on Profile, Region, and Protocol
+	var links []string
 	for _, node := range candidateNodes {
-		// Region filter check
 		if sub.Profile == ProfileRegion && sub.RegionFilter != "" {
 			if !strings.EqualFold(node.Country, sub.RegionFilter) {
 				continue
 			}
 		}
 
-		for _, proto := range supportedProtocols {
-			res, err := h.shareService.Generate(node, proto, cfg)
-			if err == nil && res != nil && res.URI != "" {
-				if !seen[res.URI] {
-					seen[res.URI] = true
-					uris = append(uris, res.URI)
-				}
+		// Determine target protocol
+		targetProtocol := "vless"
+		if sub.Profile == ProfileProtocol && sub.ProtocolFilter != "" {
+			targetProtocol = strings.ToLower(sub.ProtocolFilter)
+		}
+
+		res, err := h.shareService.Generate(node, targetProtocol, cfg)
+		if err == nil && res != nil && res.Supported && res.URI != "" {
+			links = append(links, res.URI)
+		} else if targetProtocol == "vless" && (res == nil || !res.Supported) {
+			// Fallback to socks5 if vless is not supported in current runtime
+			resSocks, errSocks := h.shareService.Generate(node, "socks5", cfg)
+			if errSocks == nil && resSocks != nil && resSocks.Supported && resSocks.URI != "" {
+				links = append(links, resSocks.URI)
 			}
 		}
 	}
 
-	rawContent := strings.Join(uris, "\n")
-	encoded := base64.StdEncoding.EncodeToString([]byte(rawContent))
+	if len(links) == 0 {
+		// Provide informative header if no nodes match criteria
+		links = append(links, "# No active nodes matching criteria")
+	}
+
+	// 4. Encode as Base64 proxy list
+	joined := strings.Join(links, "\n")
+	encoded := base64.StdEncoding.EncodeToString([]byte(joined))
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Subscription-Userinfo", "upload=0; download=0; total=107374182400; expire=0")
-	w.Header().Set("Profile-Update-Interval", "24")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(encoded))
 }
 
-// RedactedLoggingMiddleware ensures that /sub/<token> is never logged with the raw secret token
+func parseRuntimeConfig(raw map[string]interface{}) sharelink.RuntimeConfig {
+	cfg := sharelink.RuntimeConfig{}
+	if raw == nil {
+		return cfg
+	}
+	if socks, ok := raw["socks"].(map[string]interface{}); ok {
+		cfg.SocksAddress, _ = socks["address"].(string)
+		if port, ok := socks["port"].(float64); ok {
+			cfg.SocksPort = int(port)
+		} else if port, ok := socks["port"].(int); ok {
+			cfg.SocksPort = port
+		}
+	}
+	if vless, ok := raw["vless"].(map[string]interface{}); ok {
+		cfg.VlessEnabled = true
+		cfg.VlessAddress, _ = vless["address"].(string)
+		cfg.VlessUUID, _ = vless["uuid"].(string)
+		cfg.VlessSecurity, _ = vless["security"].(string)
+		cfg.VlessSNI, _ = vless["server_name"].(string)
+		cfg.VlessFingerprint, _ = vless["fingerprint"].(string)
+		cfg.VlessPublicKey, _ = vless["public_key"].(string)
+		cfg.VlessShortID, _ = vless["short_id"].(string)
+		cfg.VlessFlow, _ = vless["flow"].(string)
+		cfg.VlessType, _ = vless["type"].(string)
+		if port, ok := vless["port"].(float64); ok {
+			cfg.VlessPort = int(port)
+		}
+	}
+	if protos, ok := raw["protocols"].([]interface{}); ok {
+		for _, p := range protos {
+			if s, ok := p.(string); ok {
+				cfg.SupportedProtocols = append(cfg.SupportedProtocols, s)
+			}
+		}
+	}
+	return cfg
+}
+
 func RedactedLoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		uri := r.RequestURI
-		if strings.HasPrefix(uri, "/sub/") {
-			parts := strings.Split(uri, "/")
-			if len(parts) >= 3 {
-				// Replace raw token with [REDACTED] in logs
-				log.Printf("[Access-Redacted] %s %s from %s", r.Method, "/sub/[REDACTED]", r.RemoteAddr)
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/sub/") {
+			parts := strings.Split(strings.Trim(path, "/"), "/")
+			if len(parts) >= 2 && len(parts[1]) > 0 {
+				path = "/sub/[REDACTED]"
 			}
-		} else {
-			log.Printf("[Access] %s %s from %s", r.Method, uri, r.RemoteAddr)
 		}
+		log.Printf("[HTTP] %s %s from %s", r.Method, path, auth.GetClientIP(r))
 		next.ServeHTTP(w, r)
 	})
 }

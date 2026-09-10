@@ -176,3 +176,68 @@ func TestSpecialCharactersAndUnicode(t *testing.T) {
 		t.Errorf("failed validation on URI with unicode tag: %v", err)
 	}
 }
+
+func TestClientProfilesAndStructuredExport(t *testing.T) {
+	node := NodeInfo{
+		ID:      "node-jp-01",
+		IP:      "203.0.113.10",
+		Country: "JP",
+	}
+
+	cfg := RuntimeConfig{
+		VlessEnabled:     true,
+		VlessAddress:     "node.example.org",
+		VlessPort:        443,
+		VlessUUID:        "e96f131a-5b12-4d56-b072-4b7b2ce89012",
+		VlessSecurity:    "reality",
+		VlessSNI:         "gateway.icloud.com",
+		VlessFingerprint: "chrome",
+		VlessPublicKey:   "testPublicKeyBase64StringForRealityVerification123",
+		VlessShortID:     "abcd1234ef",
+		VlessFlow:        "xtls-rprx-vision",
+		VlessType:        "tcp",
+		SocksAddress:     "127.0.0.1",
+		SocksPort:        1080,
+	}
+
+	// 1. Generate VLESS Profile
+	vlessProfile, err := GenerateClientProfile("host-1", "Tokyo-01", node, "vless", cfg)
+	if err != nil {
+		t.Fatalf("GenerateClientProfile VLESS failed: %v", err)
+	}
+	if vlessProfile.ClashConfig == "" || !strings.Contains(vlessProfile.ClashConfig, "reality-opts") {
+		t.Errorf("ClashConfig missing reality-opts: %s", vlessProfile.ClashConfig)
+	}
+	if vlessProfile.SingBoxConfig == nil {
+		t.Errorf("SingBoxConfig is nil")
+	}
+	if vlessProfile.XrayConfig == nil {
+		t.Errorf("XrayConfig is nil")
+	}
+
+	// 2. Generate SOCKS5 Profile
+	socksProfile, err := GenerateClientProfile("host-1", "Tokyo-01", node, "socks5", cfg)
+	if err != nil {
+		t.Fatalf("GenerateClientProfile SOCKS5 failed: %v", err)
+	}
+	if !strings.HasPrefix(socksProfile.URI, "socks5://") {
+		t.Errorf("expected socks5 URI, got: %s", socksProfile.URI)
+	}
+
+	// 3. Test Structured Export
+	text := GenerateStructuredAllText("Tokyo-01", "jp01.example.com", []*ClientProfile{vlessProfile, socksProfile})
+	if !strings.Contains(text, "SUPER-PROXY CLIENT LINKS EXPORT") {
+		t.Errorf("Expected structured export header in text")
+	}
+	if !strings.Contains(text, "Clash Meta / Mihomo (YAML):") {
+		t.Errorf("Expected Clash Meta YAML in export")
+	}
+	if !strings.Contains(text, "sing-box Outbound (JSON):") {
+		t.Errorf("Expected sing-box JSON in export")
+	}
+
+	// Assert no secret leak in export
+	if strings.Contains(text, "private") || strings.Contains(text, "ovpn") {
+		t.Errorf("SECURITY LEAK in exported text: %s", text)
+	}
+}

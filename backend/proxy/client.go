@@ -25,11 +25,14 @@ func NewDaemonClient() *DaemonClient {
 		baseURL = "https://127.0.0.1:60000"
 	}
 	apiKey := os.Getenv("XRAY_MANAGER_API_KEY")
+	return NewClient(baseURL, apiKey)
+}
 
-	// Custom transport allowing self-signed TLS cert on localhost control plane
+func NewClient(baseURL, apiKey string) *DaemonClient {
+	// Custom transport allowing self-signed TLS cert on control plane
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true, // Localhost control plane
+			InsecureSkipVerify: true,
 		},
 		MaxIdleConns:        50,
 		MaxIdleConnsPerHost: 10,
