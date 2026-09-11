@@ -276,37 +276,115 @@ server {
 
 ---
 
-## 业务使用实战指南
+## 系统完整使用指南（从零到一上手）
 
-### 1. 添加被管主机 (Host Wizard)
-1. 登录控制台后，进入左侧导航栏的 **Hosts Fleet**（主机集群）。
-2. 点击右上角 **+ Add Host**，唤起三步添加向导：
-   - **步骤 1：主机基础信息**
-     - 主机标识 (Host ID)：如 `hk-edge-01`
-     - 主机名称 (Host Name)：如 `Hong Kong Edge Alpha`
-     - 所属区域 (Region/Country)：如 `Hong Kong (HK)`
-   - **步骤 2：Agent 连接信息**
-     - Agent 端点地址：填写远程 `super-proxy` 守护进程的 Agent API 地址，例如 `https://198.51.100.10:60000`
-     - Agent 认证 Token：输入远程守护进程配置的 API 密钥
-   - **步骤 3：安全指纹与连通性测试**
-     - 点击 **Probe Certificate**，Manager 将自动探测远程 TLS 证书并提取 SHA-256 证书指纹进行 Pinning 绑定。
-     - 点击 **Test Connection**，验证端到端安全连接、状态机状态及节点上报情况。
-3. 点击 **Save Host** 保存，该主机凭据随即在 SQLite 中被 AES-256-GCM 密文持久化。
+### 1. 首次访问与管理员初始化
+1. **获取动态初始密码**：首次启动服务后，查看终端或 Systemd 日志（`journalctl -u super-proxy-web -n 20`），复制其中的 32 位随机临时密码。
+2. **登录系统**：浏览器打开控制台地址（例如 `http://127.0.0.1:8443` 或配置好的域名），输入默认用户名 `admin` 与该临时密码登录。
+3. **强制安全改密**：系统会自动拦截并弹出「强制修改密码」弹窗。设定不少于 12 位的强密码后提交。旧临时密码立即失效，系统将引导使用新密码重新认证。
 
-### 2. 多主机实时切换
-- 在页面顶部导航栏正中，始终常驻 **`HOST: <当前主机名称> ▼`** 下拉框。
-- 点击即可一键切换到任意集群主机，仪表盘、节点打分、槽位控制、策略路由和客户端配置均立刻切换至该主机的独立视图，不同主机数据严格隔离，杜绝串扰。
+---
 
-### 3. 获取客户端配置 (Client Config)
-进入左侧 **Share Links**（客户端配置中心）：
-- 系统自动调用当前选中主机的 `/api/v1/client-config/all` 规范接口。
-- 支持单节点与全节点模式：
-  - **VLESS Reality**：点击 **[Copy]** 直接复制链接；点击 **[QR]** 弹出离线高清二维码供手机客户端扫码导入。
-  - **Clash Meta**：点击 **[Download]** 获得预设策略组与完整 outbound 的 `clash-meta.yaml`。
-  - **sing-box**：点击 **[Download]** 获得规范 JSON 出站配置 `sing-box.json`。
-  - **Xray-core**：点击 **[Download]** 获得 `xray.json`。
-  - **Copy All**：一键以格式化多协议文本导出当前节点所有格式配置。
-- **批量跨主机导出 (Batch ZIP)**：点击右上角 **Batch Export**，可跨主机勾选多个出站节点，一键生成结构清晰、防路径穿越的安全 ZIP 压缩包下载。
+### 2. 接入并管理被管主机（Hosts Fleet）
+控制台支持管理任意多台分布在不同地域机房的 `super-proxy` 实例：
+1. 点击左侧导航栏的 **Hosts Fleet** 进入主机集群列表。
+2. 点击右上角 **+ Add Host** 按钮，启动「三步接入向导」：
+   - **Step 1: 基础属性定义**
+     - `Host ID`：全局唯一英文标识（如 `tokyo-node-01`，用于内部路由与路由绑定）。
+     - `Host Name`：人类可读的展示名称（如 `东京核心出海节点 A`）。
+     - `Region / Country`：地理区域或机房归属（如 `Japan (JP)`）。
+   - **Step 2: 连接凭据配置**
+     - `Agent Endpoint URL`：填写远程被管机器上 `super-proxy` 守护进程开放的 Agent API 端点，例如 `https://203.0.113.10:60000`。
+     - `Agent Token`：填写该实例在部署时设定的 API 访问令牌（XRAY_MANAGER_API_KEY）。
+   - **Step 3: 安全指纹探测与连通性验证**
+     - 点击 **Probe Certificate**：Manager 将向目标 Agent 发起 TLS 握手，自动提取对方自签名或有效证书的 SHA-256 指纹（格式如 `SHA256:3B:82:...`）填入锁定，杜绝 DNS 劫持与中间人嗅探。
+     - 点击 **Test Connection**：Manager 发起一次安全的双向健康探测，实时回显对端守护进程的运行版本、当前状态机状态（ACTIVE/SYNCING）及已挂载节点数。
+3. 点击 **Save Host** 完成保存。该主机密钥在 SQLite 中自动以 AES-256-GCM 密文落盘。
+
+---
+
+### 3. 多主机一键极速切换
+在控制台任意页面，顶部导航栏正中央均常驻 **`HOST: <当前主机> ▼`** 下拉菜单：
+- 点击下拉框可即时在东京、首尔、新加坡、美西等多台主机间平滑切换。
+- **状态严格隔离**：切换后，当前选中的 Host 状态会被记住在本地（刷新页面保持当前选择）。所有后续仪表盘指标、节点列表、实时流量、客户端配置完全切换至目标主机，绝不发生跨主机数据污染。
+
+---
+
+### 4. 实时 NOC 仪表盘（Dashboard）
+仪表盘专为 3 秒掌控全局节点健康设计：
+- **状态机指示器**：直观展示守护进程处于 `ACTIVE`、`DEGRADED` 还是 `OFFLINE`。
+- **当前生效出口拓扑**：实时展示当前出站流量实际生效的公网出口 IP、归属国旗（Country Code）与自治系统编号（ASN）。
+- **实时网络吞吐与流量计数**：包含自启动以来的下行（Inbound）与上行（Outbound）累计传输量，及每秒实时速率波动。
+- **策略路由与漏网防护（Fail-Closed）**：展示 Linux 内核路由表（Table 100-102）及 iptables/nftables `fwmark` 规则的健康状态，确保隧道故障时自动断网、绝不泄露宿主机真实出口 IP。
+
+---
+
+### 5. 节点清册与透明度评分（Nodes Inventory）
+在左侧 **Nodes** 页面，可透视底层聚合的全部候选节点及守护进程评分机制：
+- **节点指标详情**：查看每个出口节点的 IP、运营商、RTT 往返时延、TCP 丢包率、近期可用性比例。
+- **透明评分公式**：点击节点卡片，可展开由主程序评分系统计算的动态加权分值分解，清楚了解主程序为何选择或轮换某一出站线路。
+
+---
+
+### 6. 安全槽位控制器（Slot Controller）
+在左侧 **Slots** 页面：
+- 查看当前主程序分配的多条并发出口隧道（Slot 0、Slot 1、Slot 2 等）的工作拓扑。
+- **受控运维动作**：
+  - 点击 **Trigger Failover**：强制触发当前槽位切线，由底层主程序挑选最佳备用节点平滑接替。
+  - 点击 **Probe Latency**：对指定槽位发起即时端到端测速与可用性测试。
+
+---
+
+### 7. 规范客户端配置中心（Share Links）
+在左侧 **Share Links** 页面，系统自动向当前被管主机的 `/api/v1/client-config/all` 拉取权威配置并分类呈现：
+- **VLESS Reality / Vision 链接**：
+  - 点击 **[Copy]**：一键复制 `vless://uuid@host:port?security=reality...` 完整连接字符串。
+  - 点击 **[QR]**：弹出高对比度离线 Canvas 二维码，直接使用移动端应用（如 Shadowrocket、v2rayN、Loon、Surge）扫码导入。
+- **Clash Meta / Mihomo**：
+  - 点击 **[Download]**：下载包含完整 reality-opts 与客户端参数的 `clash-meta.yaml`。
+  - 点击 **[Copy]**：复制单个 proxy 节点块，可直接粘贴进已有的 Clash 配置文件中的 `proxies:` 列表中。
+- **sing-box 核心**：
+  - 点击 **[Download]**：下载标准的 `sing-box.json` 出站对象定义，直接适配 sing-box 1.8+ 客户端。
+- **Xray-core 核心**：
+  - 点击 **[Download]**：下载 `xray.json` 出站配置。
+- **全量文本一键汇总 (Copy All)**：
+  - 点击卡片右上方 **Copy All**，一次性导出当前节点包含上述所有协议的结构化文本摘要。
+- **跨主机多节点批量打包 (Batch Export ZIP)**：
+  1. 点击页面右上角的 **Batch Export** 按钮，弹出多主机节点树勾选框。
+  2. 任意勾选不同地域多台主机下的多个节点。
+  3. 点击 **Download ZIP Archive**，Manager 自动打包生成标准 ZIP 压缩包：
+     ```text
+     super-proxy-clients.zip
+     ├── 东京核心出海节点/
+     │   ├── node-tokyo-alpha/
+     │   │   ├── vless.txt
+     │   │   ├── clash-meta.yaml
+     │   │   ├── sing-box.json
+     │   │   └── xray.json
+     └── 美西备份出海节点/
+         └── node-us-beta/
+             ├── vless.txt
+             └── clash-meta.yaml
+     ```
+  4. 压缩包目录严谨安全（防路径穿越），且绝无混入 Agent Token、主密钥或私钥。
+
+---
+
+### 8. 专属订阅中心（Subscriptions）
+在左侧 **Subscriptions** 页面：
+1. **创建订阅**：点击 **+ New Subscription**，选择要绑定的目标主机及出站节点，生成独立的专属订阅链接（如 `http://<domain>/sub/<secure-token>`）。
+2. **客户端同步**：复制订阅 URL 添加至支持 Base64 订阅的客户端，客户端即可定时自动拉取最新节点配置。
+3. **安全吊销 (Revoke)**：当特定订阅泄漏或需停用时，点击列表右侧的 **Revoke** 按钮，该令牌立即在 SQLite 中作废，后续针对该 URL 的请求一律返回 404/403。
+
+---
+
+### 9. 安全变更审计（Audit Trail）与系统设置（Settings）
+- **Mutation Audit Trail**：
+  - 系统对所有敏感操作（密码修改、主机新增/修改/删除、客户端配置复制、下载、批量 ZIP 导出、订阅生成与撤销）进行不可篡改的安全审计。
+  - 记录每次操作的管理员身份、来源 IP、操作动作与时间戳。敏感密钥均脱敏记录。
+- **System Settings**：
+  - 提供在线管理员密码轮换面板（Password Management），支持随时修改当前密码并立即生效。
+  - 架构探测器以只读安全方式呈现当前服务端运行环境、数据库 WAL 模式状态与内存缓存健康度。
 
 ---
 
