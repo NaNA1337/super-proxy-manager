@@ -110,13 +110,19 @@ export const ShareLinks: React.FC<ShareLinksProps> = ({ selectedHostID, onSelect
         } else {
           // Fallback to pool qualified if exits is empty
           const qualified = await api.getPoolQualified().catch(() => []);
-          candidateNodes = qualified.map((q) => ({
+          candidateNodes = (qualified || []).map((q) => ({
             id: q.id,
             ip: q.ip,
             country: q.country || 'GLOBAL',
           }));
         }
 
+        if (candidateNodes.length === 0) {
+          const bundle = await api.getHostClientConfig(selectedHost.id);
+          candidateNodes = (bundle.nodes || []).map(n => ({
+            id: n.node_id, ip: n.endpoint_address || '', country: n.country || 'GLOBAL',
+          }));
+        }
         setNodes(candidateNodes);
         if (candidateNodes.length > 0) {
           setSelectedNodeId(candidateNodes[0].id);

@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
+	"strconv"
 
 	"github.com/NaNA1337/super-proxy-manager/backend/auth"
 	"github.com/NaNA1337/super-proxy-manager/backend/db"
@@ -12,14 +14,26 @@ import (
 	"github.com/NaNA1337/super-proxy-manager/backend/server"
 )
 
+var version = "dev"
+var commit = "unknown"
+
 func main() {
+	showVersion := flag.Bool("version", false, "print build version and exit")
 	port := flag.Int("port", 8443, "Web Manager listen port")
 	host := flag.String("host", "0.0.0.0", "Web Manager listen host")
 	dataDir := flag.String("data-dir", "data", "Data directory for SQLite database")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("super-proxy-manager %s (%s)\n", version, commit)
+		return
+	}
 
 	if envPort := os.Getenv("PORT"); envPort != "" {
-		_, _ = fmt.Sscanf(envPort, "%d", port)
+		value, err := strconv.Atoi(envPort)
+		if err != nil {
+			log.Fatalf("Invalid PORT: %v", err)
+		}
+		*port = value
 	}
 	if envHost := os.Getenv("HOST"); envHost != "" {
 		*host = envHost
@@ -28,7 +42,10 @@ func main() {
 		*dataDir = envData
 	}
 
-	addr := fmt.Sprintf("%s:%d", *host, *port)
+	if *port < 1 || *port > 65535 {
+		log.Fatal("port must be between 1 and 65535")
+	}
+	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
 
 	// 1. Initialize SQLite Database
 	database, err := db.InitDB(*dataDir)

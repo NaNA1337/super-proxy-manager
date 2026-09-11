@@ -17,7 +17,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
       - name: Run Backend Tests
@@ -36,7 +36,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
       - name: Setup Node.js
@@ -63,7 +63,9 @@ jobs:
         run: npm run build
 
       - name: Build Go Server Binary
-        run: go build -o bin/super-proxy-web ./backend/cmd/server
+        run: |
+          cp -r frontend/dist/. backend/embedded/dist/
+          go build -o bin/super-proxy-web ./backend/cmd/server
 
       - name: Install Playwright Browsers & Dependencies
         working-directory: frontend

@@ -173,7 +173,6 @@ func NewClientWithFingerprint(baseURL, apiKey, pinnedFingerprint string) *Daemon
 	}
 }
 
-
 func (c *DaemonClient) doRequest(method, path string, body interface{}) ([]byte, int, error) {
 	var bodyReader io.Reader
 	if body != nil {
@@ -479,6 +478,47 @@ func (c *DaemonClient) GetAllClientConfig(nodeID string) (*AllClientConfigRespon
 			Available: false,
 			Error:     fmt.Sprintf("invalid JSON from daemon: %v", err),
 		}, err
+	}
+
+	// super-proxy schema v1 describes one gateway endpoint, not one endpoint per VPN exit.
+	var bundle struct {
+		SchemaVersion int    `json:"schema_version"`
+		GeneratedAt   string `json:"generated_at"`
+		Node          struct {
+			ID      string `json:"id"`
+			Country string `json:"country"`
+		} `json:"node"`
+		Endpoint struct {
+			Address  string `json:"address"`
+			Port     int    `json:"port"`
+			Protocol string `json:"protocol"`
+			Network  string `json:"network"`
+		} `json:"endpoint"`
+		Reality struct {
+			Flow string `json:"flow"`
+		} `json:"reality"`
+	}
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		return nil, err
+	}
+	if bundle.SchemaVersion != 0 {
+		if bundle.SchemaVersion != 1 || bundle.Endpoint.Address == "" || bundle.Endpoint.Port != 443 || len(resp.Profiles) == 0 {
+			return &AllClientConfigResponse{Error: "invalid or unsupported canonical bundle"}, nil
+		}
+		id := bundle.Node.ID
+		if nodeID != "" {
+			id = nodeID
+		}
+		for i := range resp.Profiles {
+			resp.Profiles[i].CanQR = resp.Profiles[i].Format == "uri"
+		}
+		resp.Available = true
+		resp.Nodes = []NodeClientConfig{{
+			Available: true, NodeID: id, Country: bundle.Node.Country,
+			EndpointAddress: bundle.Endpoint.Address, EndpointPort: bundle.Endpoint.Port,
+			Protocol: bundle.Endpoint.Protocol, Transport: bundle.Endpoint.Network,
+			Flow: bundle.Reality.Flow, UpdatedAt: bundle.GeneratedAt, Profiles: resp.Profiles,
+		}}
 	}
 
 	// If response returned top-level profiles and nodeID was queried, synthesize Node struct if needed

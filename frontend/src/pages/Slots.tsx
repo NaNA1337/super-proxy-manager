@@ -192,11 +192,11 @@ export const Slots: React.FC<SlotsProps> = ({ isAdmin }) => {
                 <div className="mt-4 space-y-2.5 font-mono text-xs">
                   <div className="flex justify-between">
                     <span className="text-slate-500">Route Table:</span>
-                    <span className="text-slate-300 font-bold">{10000 + slot}</span>
+                    <span className="text-slate-300 font-bold">{100 + slot}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-500">Fwmark:</span>
-                    <span className="text-slate-300 font-bold">{10000 + slot}</span>
+                    <span className="text-slate-300 font-bold">{100 + slot}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-500">Node IP:</span>
