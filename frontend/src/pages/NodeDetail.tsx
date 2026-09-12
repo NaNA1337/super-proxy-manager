@@ -55,20 +55,15 @@ export const NodeDetail: React.FC<NodeDetailProps> = ({ nodeId, onClose, onSelec
     const positive: { label: string; score: string; note: string }[] = [];
     const negative: { label: string; score: string; note: string }[] = [];
 
-    // Base
-    positive.push({
-      label: 'Base VPN Gate Score',
-      score: `+${n.score}`,
-      note: 'Bootstrap operator score',
-    });
-
-    // Primary region
-    if (n.country === 'JP') {
-      positive.push({
-        label: 'Primary Region Bonus (JP)',
-        score: '+50',
-        note: 'High geographic affinity',
-      });
+    // Independently resolved allocation. VPN Gate's source score and reported
+    // ping are not part of the scheduler score.
+    const networkType = n.network_class?.network_type?.toLowerCase() || '';
+    if (['residential', 'broadband', 'isp'].includes(networkType)) {
+      positive.push({ label: 'Residential / Broadband Network', score: '+40', note: 'Default independent allocation weight' });
+    } else if (['wireless', 'mobile'].includes(networkType)) {
+      positive.push({ label: 'Wireless / Mobile Network', score: '+25', note: 'Default independent allocation weight' });
+    } else if (['business', 'corporate'].includes(networkType)) {
+      positive.push({ label: 'Business Network', score: '+20', note: 'Default independent allocation weight' });
     }
 
     // Speed bonus
@@ -336,6 +331,14 @@ export const NodeDetail: React.FC<NodeDetailProps> = ({ nodeId, onClose, onSelec
               </div>
 
               {/* Performance Metrics */}
+			  {node.last_error && (
+				<div className="p-4 rounded-xl border border-rose-800/60 bg-rose-950/30 font-mono text-xs">
+				  <div className="font-bold text-rose-300">LAST QUALIFICATION FAILURE</div>
+				  <div className="mt-2 text-slate-200 break-words">{node.last_error}</div>
+				  {node.last_failure_at && <div className="mt-1 text-slate-500">{new Date(node.last_failure_at).toLocaleString()}</div>}
+				</div>
+			  )}
+
               <div className="glass-panel p-5 rounded-xl border border-slate-800 space-y-3 font-mono text-xs">
                 <div className="flex items-center gap-2 text-slate-300 font-bold pb-2 border-b border-slate-800">
                   <Activity className="w-4 h-4 text-amber-400" />

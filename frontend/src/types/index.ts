@@ -114,6 +114,8 @@ export interface CurrentExit {
   score: number;
   throughput: number;
   last_check: string;
+  reputation?: ReputationMetrics;
+  network_class?: NetworkClass;
   host_id?: string;
   host_name?: string;
 }
@@ -131,6 +133,7 @@ export interface PoolSummary {
   candidate: number;
   cooldown: number;
   rejected: number;
+	  pending_review?: number;
 }
 
 export interface ReputationMetrics {
@@ -187,6 +190,8 @@ export interface Node {
   last_seen: string;
   first_seen: string;
   fail_count: number;
+	  last_error?: string;
+	  last_failure_at?: string;
   reputation: ReputationMetrics;
   network_class: NetworkClass;
   performance: PerformanceMetrics;

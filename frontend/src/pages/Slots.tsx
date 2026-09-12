@@ -8,7 +8,8 @@ import {
   CheckCircle2,
   RefreshCw,
   Lock,
-  Clock
+  Clock,
+  Search
 } from 'lucide-react';
 import { SlotsOverview, CurrentExit, Node, Operation } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
@@ -30,6 +31,9 @@ export const Slots: React.FC<SlotsProps> = ({ isAdmin }) => {
   const [switchLoading, setSwitchLoading] = useState(false);
   const [switchError, setSwitchError] = useState('');
   const [activeOp, setActiveOp] = useState<Operation | null>(null);
+	const [candidateSearch, setCandidateSearch] = useState('');
+	const [candidateASN, setCandidateASN] = useState('');
+	const [candidateType, setCandidateType] = useState('');
 
   const fetchSlotsData = async () => {
     try {
@@ -77,6 +81,9 @@ export const Slots: React.FC<SlotsProps> = ({ isAdmin }) => {
     setSwitchingSlot(slot);
     setSelectedTargetNode('');
     setSwitchError('');
+    setCandidateSearch('');
+    setCandidateASN('');
+    setCandidateType('');
   };
 
   const handleExecuteSwitch = async () => {
@@ -109,6 +116,18 @@ export const Slots: React.FC<SlotsProps> = ({ isAdmin }) => {
   };
 
   const totalSlots = slotsOverview?.total_configured || 3;
+	const candidateASNs = Array.from(new Set(qualifiedNodes.map((node) => node.network_class?.asn).filter(Boolean) as string[])).sort();
+	const candidateTypes = Array.from(new Set(qualifiedNodes.map((node) => node.network_class?.network_type).filter(Boolean) as string[])).sort();
+	const normalizedSearch = candidateSearch.trim().toLowerCase();
+	const filteredCandidates = qualifiedNodes
+		.filter((node) => {
+			const network = node.network_class;
+			const matchesSearch = !normalizedSearch || [node.ip, node.hostname, network?.asn, network?.isp, network?.organization]
+				.some((value) => value?.toLowerCase().includes(normalizedSearch));
+			return matchesSearch && (!candidateASN || network?.asn === candidateASN) &&
+				(!candidateType || network?.network_type === candidateType);
+		})
+		.sort((a, b) => b.score - a.score);
   const slotList = [];
   for (let i = 0; i < totalSlots; i++) {
     const exit = exits.find((e) => e.slot === i);
@@ -206,6 +225,14 @@ export const Slots: React.FC<SlotsProps> = ({ isAdmin }) => {
                     <span className="text-slate-500">Country:</span>
                     <span className="text-cyan-300 font-semibold">{exit ? exit.country : '--'}</span>
                   </div>
+				  <div className="flex justify-between gap-3">
+					<span className="text-slate-500">ASN:</span>
+					<span className="text-white font-bold text-right">{exit?.network_class?.asn || '--'}</span>
+				  </div>
+				  <div className="flex justify-between gap-3">
+					<span className="text-slate-500">Network:</span>
+					<span className="text-cyan-300 uppercase text-right">{exit?.network_class?.network_type || '--'}</span>
+				  </div>
                   <div className="flex justify-between">
                     <span className="text-slate-500">Throughput:</span>
                     <span className="text-emerald-400 font-bold">
@@ -282,15 +309,34 @@ export const Slots: React.FC<SlotsProps> = ({ isAdmin }) => {
 
             <div>
               <label className="block text-xs font-mono text-slate-400 mb-2">
-                Candidate Nodes ({qualifiedNodes.length} Qualified):
+				Candidate Nodes ({filteredCandidates.length} / {qualifiedNodes.length} Vetted):
               </label>
+			  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3 font-mono text-xs">
+				<label className="relative sm:col-span-3">
+				  <Search className="absolute left-2.5 top-2.5 w-3.5 h-3.5 text-slate-500" />
+				  <input
+					value={candidateSearch}
+					onChange={(event) => setCandidateSearch(event.target.value)}
+					placeholder="Filter IP, ASN, ISP or organization"
+					className="w-full pl-8 pr-3 py-2 rounded-lg bg-noc-950 border border-slate-800 text-slate-200 focus:border-cyan-600 outline-none"
+				  />
+				</label>
+				<select value={candidateASN} onChange={(event) => setCandidateASN(event.target.value)} className="sm:col-span-2 px-2 py-2 rounded-lg bg-noc-950 border border-slate-800 text-slate-300">
+				  <option value="">All ASNs</option>
+				  {candidateASNs.map((asn) => <option key={asn} value={asn}>{asn}</option>)}
+				</select>
+				<select value={candidateType} onChange={(event) => setCandidateType(event.target.value)} className="px-2 py-2 rounded-lg bg-noc-950 border border-slate-800 text-slate-300">
+				  <option value="">All types</option>
+				  {candidateTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+				</select>
+			  </div>
               <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
-                {qualifiedNodes.length === 0 ? (
+				{filteredCandidates.length === 0 ? (
                   <div className="p-4 text-center text-xs text-slate-500 font-mono">
-                    No qualified nodes currently standby.
+					No vetted candidates match the current filters.
                   </div>
                 ) : (
-                  qualifiedNodes.map((n) => (
+				  filteredCandidates.map((n) => (
                     <div
                       key={n.id}
                       onClick={() => setSelectedTargetNode(n.id)}
@@ -308,8 +354,13 @@ export const Slots: React.FC<SlotsProps> = ({ isAdmin }) => {
                           </span>
                         </div>
                         <div className="text-[11px] text-slate-500 mt-0.5">
-                          Score: {n.score} • RTT: {n.performance?.rtt_ms || '--'}ms • Speed: {((n.performance?.download_bps || 0) / 1000000).toFixed(1)}M
+                          Score: {n.score} • RTT: {n.performance?.rtt_ms > 0 ? `${n.performance.rtt_ms}ms` : '--'} • Speed: {((n.performance?.download_bps || 0) / 1000000).toFixed(1)}M
                         </div>
+						<div className="text-[11px] text-slate-400 mt-1">
+						  <span className="font-bold text-cyan-300">{n.network_class?.asn || 'ASN unavailable'}</span>
+						  {' • '}{n.network_class?.isp || n.network_class?.organization || 'Unknown provider'}
+						  {' • '}<span className="uppercase">{n.network_class?.network_type || 'unknown'}</span>
+						</div>
                       </div>
                       <input
                         type="radio"

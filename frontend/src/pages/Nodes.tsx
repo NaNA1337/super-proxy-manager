@@ -252,7 +252,7 @@ export const Nodes: React.FC<NodesProps> = ({ onSelectNodeForShareLink }) => {
                     </td>
 
                     <td className="py-3 px-4 text-slate-300 truncate max-w-xs">
-                      {node.network_class?.asn || 'AS-VPNGATE'} ({node.network_class?.isp || 'Broadband'})
+					  {node.network_class?.asn || 'ASN pending'} ({node.network_class?.isp || 'Provider unavailable'})
                     </td>
 
                     <td className="py-3 px-4">
