@@ -166,6 +166,62 @@ func TestBootstrapAndForcedPasswordChange(t *testing.T) {
 	}
 }
 
+func TestResetAdminPasswordPreservesDatabase(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	_, initialPassword, err := CheckOrInitBootstrap(database, "127.0.0.1:8080")
+	if err != nil {
+		t.Fatalf("bootstrap failed: %v", err)
+	}
+	updatedPassword := "ExistingPassword2026!"
+	if err := ChangePassword(database, "admin", initialPassword, updatedPassword, updatedPassword); err != nil {
+		t.Fatalf("initial password change failed: %v", err)
+	}
+	updatedUser, err := Authenticate(database, "admin", updatedPassword)
+	if err != nil {
+		t.Fatalf("authenticate before reset failed: %v", err)
+	}
+	oldSession, err := CreateSession(database, updatedUser, time.Hour)
+	if err != nil {
+		t.Fatalf("create session before reset failed: %v", err)
+	}
+	if _, err := database.Conn().Exec(`
+		INSERT INTO audit_logs (timestamp, username, role, action, target, result, source_ip, details)
+		VALUES (?, 'admin', 'admin', 'test', 'preserved-row', 'success', '127.0.0.1', 'before reset')
+	`, time.Now().UTC()); err != nil {
+		t.Fatalf("insert preserved row failed: %v", err)
+	}
+
+	resetPassword, err := ResetAdminPassword(database)
+	if err != nil {
+		t.Fatalf("ResetAdminPassword failed: %v", err)
+	}
+	if resetPassword == "" || resetPassword == updatedPassword {
+		t.Fatal("reset must generate a new temporary password")
+	}
+	if _, err := Authenticate(database, "admin", updatedPassword); err == nil {
+		t.Fatal("previous password must be rejected after reset")
+	}
+	user, err := Authenticate(database, "admin", resetPassword)
+	if err != nil {
+		t.Fatalf("temporary reset password must authenticate: %v", err)
+	}
+	if !user.MustChangePassword {
+		t.Fatal("reset password must require a password change")
+	}
+	if _, valid := GetSession(database, oldSession.Token); valid {
+		t.Fatal("reset must revoke existing admin sessions")
+	}
+	var preservedRows int
+	if err := database.Conn().QueryRow("SELECT COUNT(*) FROM audit_logs WHERE target = 'preserved-row'").Scan(&preservedRows); err != nil {
+		t.Fatalf("query preserved row failed: %v", err)
+	}
+	if preservedRows != 1 {
+		t.Fatalf("reset changed unrelated database records: got %d preserved rows", preservedRows)
+	}
+}
+
 func TestCSRFValidation(t *testing.T) {
 	sess := &Session{CSRFToken: "valid-csrf-token-12345"}
 	if !ValidateCSRF(sess, "valid-csrf-token-12345") {

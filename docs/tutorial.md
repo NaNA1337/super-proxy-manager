@@ -10,7 +10,15 @@
 
 查看 Manager 本次启动日志，使用 `admin` 和临时密码登录。页面要求修改密码时完成修改；不要寻找固定默认密码。刷新后应保持会话。退出后使用新密码登录验证。
 
-如果初始化过却忘记密码，不要直接删除数据目录；该目录还保存主机信息和解密密钥，应先备份并按你的恢复流程处理。
+如果初始化过却忘记密码，不要删除数据目录。先停止正在运行的 Manager，再生成新的单次临时密码：
+
+```bash
+sudo systemctl stop super-proxy-web
+sudo super-proxy-web -reset-admin-password
+sudo systemctl start super-proxy-web
+```
+
+旧密码和旧登录会话会失效，主机信息、Token、数据库和 `.master.key` 保持不变。默认数据目录是 `/var/lib/super-proxy-manager/data`；使用自定义目录时给重置命令增加相同的 `-data-dir`。
 
 ## 3. 建立主机信任
 
@@ -48,7 +56,7 @@ Share Links 选择主机后读取核心配置。没有活动 VPN 节点但 VLESS
 
 ## 7. 更新和回滚
 
-先备份配置及数据目录，再构建并安装新 Manager 二进制。`scripts/build.sh` 同步前端嵌入资源。重启后检查登录、主机列表、测试连接、Share Links；订阅重建后通知实际使用者。保留旧二进制和对应数据库备份以便回滚。
+先备份配置及数据目录，再构建并安装新 Manager 二进制。`scripts/build.sh` 同步前端嵌入资源。Manager 裸启动默认使用 `/var/lib/super-proxy-manager/data`，不会随当前工作目录变化。v1.0.2 或更早版本裸启动产生的相对 `data` 目录需要连同 `.master.key` 一起迁移。重启后检查登录、主机列表、测试连接、Share Links；订阅重建后通知实际使用者。保留旧二进制和对应数据库备份以便回滚。
 
 ## 8. 可重复联调
 

@@ -10,7 +10,7 @@ Super-Proxy Manager 是 [Super-Proxy Core](https://github.com/NaNA1337/super-pro
 
 Manager 负责主机管理、出口状态、手动切换、指标查看和客户端配置导出。它不运行 Xray、OpenVPN，也不需要应用配置文件。
 
-当前版本：[v1.0.2](https://github.com/NaNA1337/super-proxy-manager/releases/tag/v1.0.2)
+当前版本：[v1.0.3](https://github.com/NaNA1337/super-proxy-manager/releases/tag/v1.0.3)
 
 ## 快速安装
 
@@ -26,7 +26,7 @@ sudo apt-get install -y ca-certificates wget
 下载、校验并安装到 `/usr/local/bin`：
 
 ```bash
-VERSION=1.0.2
+VERSION=1.0.3
 ARCH="$(dpkg --print-architecture)"
 case "$ARCH" in
   amd64|arm64) ;;
@@ -50,20 +50,19 @@ super-proxy-web -version
 正确输出应包含：
 
 ```text
-super-proxy-manager 1.0.2
+super-proxy-manager 1.0.3
 ```
 
 ## 直接启动
 
-Manager 不读取 YAML 或 JSON 配置。启动参数直接写在命令中：
+Manager 不读取 YAML 或 JSON 配置。裸启动即可使用：
 
 ```bash
 sudo install -d -m 700 /var/lib/super-proxy-manager/data
-sudo super-proxy-web \
-  -host 0.0.0.0 \
-  -port 8443 \
-  -data-dir /var/lib/super-proxy-manager/data
+sudo super-proxy-web
 ```
+
+默认监听 `0.0.0.0:8443`，数据库和主密钥固定保存在 `/var/lib/super-proxy-manager/data`。从任何目录执行裸启动都会使用同一个数据库。
 
 浏览器访问：
 
@@ -74,11 +73,7 @@ http://Manager服务器IP:8443
 如果 Core Agent 使用 `127.0.0.1`、`10.x`、`172.16-31.x` 或 `192.168.x` 地址，启动时增加 `-allow-private-hosts`：
 
 ```bash
-sudo super-proxy-web \
-  -host 0.0.0.0 \
-  -port 8443 \
-  -data-dir /var/lib/super-proxy-manager/data \
-  -allow-private-hosts
+sudo super-proxy-web -allow-private-hosts
 ```
 
 公网 Core Agent 不需要该参数。即使启用该参数，云厂商元数据和 link-local 地址仍会被禁止。
@@ -94,7 +89,17 @@ Admin username: admin
 Temporary password: 随机生成的密码
 ```
 
-使用 `admin` 登录后必须立即修改密码，新密码至少 12 位。临时密码不会再次显示，数据保存在 `-data-dir` 指定的目录中。
+使用 `admin` 登录后必须立即修改密码，新密码至少 12 位。临时密码不会再次显示。
+
+忘记密码时保留数据库并生成新的临时密码：
+
+```bash
+sudo systemctl stop super-proxy-web
+sudo super-proxy-web -reset-admin-password
+sudo systemctl start super-proxy-web
+```
+
+命令会输出新的单次临时密码，旧密码和旧会话立即失效；已添加的主机、Token 和其他数据不会被删除。
 
 ## 添加 Core 主机
 
@@ -131,7 +136,7 @@ sudo openssl x509 \
 下载并安装仓库自带的服务文件：
 
 ```bash
-VERSION=1.0.2
+VERSION=1.0.3
 wget -O /tmp/super-proxy-web.service \
   "https://raw.githubusercontent.com/NaNA1337/super-proxy-manager/v${VERSION}/deploy/super-proxy-web.service"
 
@@ -179,8 +184,9 @@ sudo systemctl restart super-proxy-web
 | --- | --- | --- |
 | `-host` | `0.0.0.0` | Manager Web 监听地址 |
 | `-port` | `8443` | Manager Web HTTP 端口 |
-| `-data-dir` | `data` | 数据库和主密钥目录 |
+| `-data-dir` | `/var/lib/super-proxy-manager/data` | 数据库和主密钥目录 |
 | `-allow-private-hosts` | 关闭 | 允许连接回环和私网 Core Agent |
+| `-reset-admin-password` | 关闭 | 生成新的管理员临时密码并退出 |
 | `-version` | — | 显示版本 |
 
 查看帮助：
@@ -199,6 +205,15 @@ super-proxy-web -h
 /var/lib/super-proxy-manager/data
 ├── super-proxy-manager.db
 └── .master.key
+```
+
+如果曾使用 v1.0.2 或更早版本裸启动，旧数据可能位于启动目录下的 `data`。停止 Manager 后，把整个旧目录迁移到默认位置，数据库和 `.master.key` 必须一起移动：
+
+```bash
+sudo systemctl stop super-proxy-web
+sudo install -d -m 700 /var/lib/super-proxy-manager/data
+sudo cp -a /原启动目录/data/. /var/lib/super-proxy-manager/data/
+sudo systemctl start super-proxy-web
 ```
 
 `.master.key` 用于加密保存的 Agent Token，必须与数据库一起备份：
@@ -221,6 +236,27 @@ sudo systemctl start super-proxy-web
 sudo systemctl restart super-proxy-web
 super-proxy-web -version
 ```
+
+## 卸载
+
+下载发布版自带的卸载脚本：
+
+```bash
+VERSION=1.0.3
+wget -O /tmp/super-proxy-manager-uninstall.sh \
+  "https://github.com/NaNA1337/super-proxy-manager/releases/download/v${VERSION}/uninstall.sh"
+sudo bash /tmp/super-proxy-manager-uninstall.sh
+```
+
+默认只删除 systemd 服务和 `/usr/local/bin/super-proxy-web`，数据仍保存在 `/var/lib/super-proxy-manager`，以后重装可以继续使用。
+
+确认不再需要数据库、主机 Token 和主密钥时，执行完全清理并按提示输入 `DELETE`：
+
+```bash
+sudo bash /tmp/super-proxy-manager-uninstall.sh --purge-data
+```
+
+无人值守完全清理可增加 `--yes`。v1.0.2 或更早版本可能在手动启动目录留下相对 `data`，卸载脚本不会自动删除无法确认归属的目录。
 
 ## 从源码构建
 
@@ -251,10 +287,7 @@ bin/super-proxy-web
 
 ```bash
 sudo install -m 755 bin/super-proxy-web /usr/local/bin/super-proxy-web
-sudo super-proxy-web \
-  -host 0.0.0.0 \
-  -port 8443 \
-  -data-dir /var/lib/super-proxy-manager/data
+sudo super-proxy-web
 ```
 
 运行测试：
@@ -284,6 +317,7 @@ npm run test:e2e
 | Agent 返回 401/403 | 检查 Core 当前 `api.key` |
 | TLS 指纹不匹配 | 确认证书是否被重新生成 |
 | 重启后主机 Token 无法解密 | 恢复与数据库配套的 `.master.key` |
+| 忘记管理员密码 | 停止服务后运行 `sudo super-proxy-web -reset-admin-password` |
 
 - [详细操作教程](docs/tutorial.md)
 - [Manager 与 Agent API 审计](docs/web-manager-api-audit.md)

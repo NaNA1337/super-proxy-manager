@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/NaNA1337/super-proxy-manager/backend/auth"
@@ -18,12 +19,15 @@ import (
 var version = "dev"
 var commit = "unknown"
 
+const defaultDataDir = "/var/lib/super-proxy-manager/data"
+
 func main() {
 	showVersion := flag.Bool("version", false, "print build version and exit")
 	port := flag.Int("port", 8443, "Web Manager listen port")
 	listenHost := flag.String("host", "0.0.0.0", "Web Manager listen host")
-	dataDir := flag.String("data-dir", "data", "Data directory for SQLite database")
+	dataDir := flag.String("data-dir", defaultDataDir, "Data directory for SQLite database")
 	allowPrivateHosts := flag.Bool("allow-private-hosts", false, "allow loopback and private-network Agent URLs")
+	resetAdminPassword := flag.Bool("reset-admin-password", false, "reset admin to a new one-time password and exit")
 	flag.Parse()
 	if *showVersion {
 		fmt.Printf("super-proxy-manager %s (%s)\n", version, commit)
@@ -47,6 +51,12 @@ func main() {
 	if *port < 1 || *port > 65535 {
 		log.Fatal("port must be between 1 and 65535")
 	}
+	if *resetAdminPassword {
+		dbPath := filepath.Join(*dataDir, "super-proxy-manager.db")
+		if _, err := os.Stat(dbPath); err != nil {
+			log.Fatalf("Cannot reset admin password: database %q is not accessible: %v", dbPath, err)
+		}
+	}
 	hostpolicy.SetPrivateHostsAllowed(*allowPrivateHosts)
 	if hostpolicy.IsPrivateHostsAllowed() {
 		log.Println("Private-network Agent URLs are enabled")
@@ -59,6 +69,14 @@ func main() {
 		log.Fatalf("Failed to initialize database in %q: %v", *dataDir, err)
 	}
 	defer database.Close()
+	if *resetAdminPassword {
+		temporaryPassword, err := auth.ResetAdminPassword(database)
+		if err != nil {
+			log.Fatalf("Failed to reset admin password: %v", err)
+		}
+		fmt.Printf("Admin username: admin\nTemporary password: %s\n", temporaryPassword)
+		return
+	}
 
 	// 2. Perform first-time setup check / bootstrap
 	_, _, err = auth.CheckOrInitBootstrap(database, addr)

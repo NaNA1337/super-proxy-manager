@@ -47,6 +47,14 @@ var (
 	sessions = make(map[string]*Session)
 )
 
+func generateTemporaryPassword() (string, error) {
+	randBytes := make([]byte, 16)
+	if _, err := rand.Read(randBytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(randBytes), nil
+}
+
 // CheckOrInitBootstrap checks if any user exists. If not, it generates a high-entropy
 // temporary bootstrap password for the 'admin' user, saves it to the database with
 // must_change_password = true, and displays the setup banner ONCE in stdout.
@@ -64,11 +72,10 @@ func CheckOrInitBootstrap(database *db.DB, listenAddr string) (bool, string, err
 	}
 
 	// Generate 32-character high-entropy temporary password
-	randBytes := make([]byte, 16)
-	if _, err := rand.Read(randBytes); err != nil {
+	tempPassword, err := generateTemporaryPassword()
+	if err != nil {
 		return false, "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}
-	tempPassword := hex.EncodeToString(randBytes)
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(tempPassword), bcrypt.DefaultCost)
 	if err != nil {
@@ -107,6 +114,58 @@ func CheckOrInitBootstrap(database *db.DB, listenAddr string) (bool, string, err
 	fmt.Printf("========================================================\n\n")
 
 	return true, tempPassword, nil
+}
+
+// ResetAdminPassword replaces the admin password with a new one-time password.
+// It preserves the database, configured hosts, and encryption master key.
+func ResetAdminPassword(database *db.DB) (string, error) {
+	temporaryPassword, err := generateTemporaryPassword()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate temporary password: %w", err)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(temporaryPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return "", fmt.Errorf("failed to hash temporary password: %w", err)
+	}
+
+	tx, err := database.Conn().Begin()
+	if err != nil {
+		return "", fmt.Errorf("failed to begin admin password reset: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.Exec(`
+		UPDATE users
+		SET password_hash = ?, must_change_password = 1, updated_at = ?
+		WHERE username = 'admin'
+	`, string(hash), time.Now().UTC())
+	if err != nil {
+		return "", fmt.Errorf("failed to update admin password: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return "", fmt.Errorf("failed to verify admin password update: %w", err)
+	}
+	if rows != 1 {
+		return "", errors.New("admin user not found")
+	}
+
+	if _, err := tx.Exec("DELETE FROM sessions WHERE username = 'admin'"); err != nil {
+		return "", fmt.Errorf("failed to revoke admin sessions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("failed to commit admin password reset: %w", err)
+	}
+
+	sessMu.Lock()
+	for token, session := range sessions {
+		if session.Username == "admin" {
+			delete(sessions, token)
+		}
+	}
+	sessMu.Unlock()
+
+	return temporaryPassword, nil
 }
 
 // Authenticate verifies username and password against SQLite database

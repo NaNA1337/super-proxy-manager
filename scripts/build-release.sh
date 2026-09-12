@@ -12,6 +12,7 @@ npm --prefix frontend ci
 npm --prefix frontend run build
 diff -qr frontend/dist backend/embedded/dist
 mkdir -p "$output"
+cp scripts/uninstall.sh "$output/uninstall.sh"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 for arch in amd64 arm64; do
@@ -20,11 +21,12 @@ for arch in amd64 arm64; do
     package="super-proxy-manager-v${version}-linux-$arch"
     mkdir -p "$work/$package"
     cp "$binary" "$work/$package/super-proxy-web"
+    cp scripts/uninstall.sh "$work/$package/uninstall.sh"
     cp README.md "$work/$package/"
     cp -r deploy docs "$work/$package/"
     tar -C "$work" -czf "$output/$package.tar.gz" "$package"
 done
 printf 'version=%s\ncommit=%s\n' "$version" "$revision" > "$output/build-info.txt"
 go version >> "$output/build-info.txt"
-(cd "$output" && sha256sum super-proxy-web-* *.tar.gz build-info.txt > checksums.txt)
+(cd "$output" && sha256sum super-proxy-web-* *.tar.gz build-info.txt uninstall.sh > checksums.txt)
 printf 'Release artifacts: %s\n' "$output"
