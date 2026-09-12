@@ -113,17 +113,25 @@ export const NodeDetail: React.FC<NodeDetailProps> = ({ nodeId, onClose, onSelec
     if (n.network_class?.is_hosting) {
       negative.push({
         label: 'Datacenter / Hosting ASN',
-        score: '-10',
-        note: `${n.network_class.asn || 'Hosting provider'} detection`,
+        score: 'REJECT',
+        note: `${n.network_class.asn || 'Hosting provider'} is prohibited by admission policy`,
       });
     }
 
     if (n.network_class?.is_vpn) {
       negative.push({
-        label: 'Commercial VPN Tag Detected',
-        score: '-5',
-        note: 'Network trait: VPN detected (NOTE: Non-malicious exit trait)',
+        label: 'VPN Exit Detected',
+        score: 'REJECT',
+        note: 'VPN-tagged exits are prohibited by admission policy',
       });
+    }
+
+    if (n.network_class?.is_proxy) {
+      negative.push({ label: 'Public Proxy Detected', score: 'REJECT', note: 'Proxy exits are prohibited by admission policy' });
+    }
+
+    if (n.network_class?.is_tor) {
+      negative.push({ label: 'Tor Exit Detected', score: 'REJECT', note: 'Tor exits are prohibited by admission policy' });
     }
 
     if (n.fail_count > 0) {
@@ -271,7 +279,7 @@ export const NodeDetail: React.FC<NodeDetailProps> = ({ nodeId, onClose, onSelec
                   </div>
                   <div className="flex justify-between py-1">
                     <span className="text-slate-400">Network Category:</span>
-                    <span className="text-cyan-300 uppercase">{node.network_class?.network_type || 'broadband'}</span>
+                    <span className="text-cyan-300 uppercase">{node.network_class?.network_type || 'unknown'}</span>
                   </div>
 
                   <div className="pt-2 border-t border-slate-800/60 grid grid-cols-4 gap-2 text-center text-[10px]">
@@ -309,19 +317,19 @@ export const NodeDetail: React.FC<NodeDetailProps> = ({ nodeId, onClose, onSelec
                   </div>
                   <div className="flex justify-between py-1">
                     <span className="text-slate-400">Blacklisted:</span>
-                    <span className={node.reputation?.is_blacklisted ? 'text-rose-400 font-bold' : 'text-emerald-400'}>
-                      {node.reputation?.is_blacklisted ? 'YES (REJECTED)' : 'NO'}
+                    <span className={node.reputation?.is_blacklisted ? 'text-rose-400 font-bold' : node.reputation?.status && node.reputation.status !== 'UNKNOWN' ? 'text-emerald-400' : 'text-amber-400'}>
+                      {node.reputation?.is_blacklisted ? 'YES (REJECTED)' : node.reputation?.status && node.reputation.status !== 'UNKNOWN' ? 'NO' : 'UNKNOWN'}
                     </span>
                   </div>
                   <div className="flex justify-between py-1">
                     <span className="text-slate-400">Evaluation Engine:</span>
-                    <span className="text-slate-300">{node.reputation?.provider_name || 'AbuseIPDB/Prefix'}</span>
+                    <span className="text-slate-300">{node.reputation?.provider_name || 'NOT EVALUATED'}</span>
                   </div>
 
                   <div className="pt-2 border-t border-slate-800/60 text-[11px] text-slate-400">
                     <span className="text-slate-500">Evidence Details:</span>
                     <p className="mt-1 p-2 rounded bg-noc-950 border border-slate-800/80 text-slate-300">
-                      {node.reputation?.details || 'Passed multi-provider prefix and ASN reputation vetting.'}
+                      {node.reputation?.details || 'No reputation evidence is available. This node has not passed reputation vetting.'}
                     </p>
                   </div>
                 </div>
