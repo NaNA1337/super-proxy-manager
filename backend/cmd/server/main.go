@@ -11,6 +11,7 @@ import (
 	"github.com/NaNA1337/super-proxy-manager/backend/auth"
 	"github.com/NaNA1337/super-proxy-manager/backend/db"
 	"github.com/NaNA1337/super-proxy-manager/backend/embedded"
+	hostpolicy "github.com/NaNA1337/super-proxy-manager/backend/host"
 	"github.com/NaNA1337/super-proxy-manager/backend/server"
 )
 
@@ -20,8 +21,9 @@ var commit = "unknown"
 func main() {
 	showVersion := flag.Bool("version", false, "print build version and exit")
 	port := flag.Int("port", 8443, "Web Manager listen port")
-	host := flag.String("host", "0.0.0.0", "Web Manager listen host")
+	listenHost := flag.String("host", "0.0.0.0", "Web Manager listen host")
 	dataDir := flag.String("data-dir", "data", "Data directory for SQLite database")
+	allowPrivateHosts := flag.Bool("allow-private-hosts", false, "allow loopback and private-network Agent URLs")
 	flag.Parse()
 	if *showVersion {
 		fmt.Printf("super-proxy-manager %s (%s)\n", version, commit)
@@ -36,7 +38,7 @@ func main() {
 		*port = value
 	}
 	if envHost := os.Getenv("HOST"); envHost != "" {
-		*host = envHost
+		*listenHost = envHost
 	}
 	if envData := os.Getenv("DATA_DIR"); envData != "" {
 		*dataDir = envData
@@ -45,7 +47,11 @@ func main() {
 	if *port < 1 || *port > 65535 {
 		log.Fatal("port must be between 1 and 65535")
 	}
-	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
+	hostpolicy.SetPrivateHostsAllowed(*allowPrivateHosts)
+	if hostpolicy.IsPrivateHostsAllowed() {
+		log.Println("Private-network Agent URLs are enabled")
+	}
+	addr := net.JoinHostPort(*listenHost, strconv.Itoa(*port))
 
 	// 1. Initialize SQLite Database
 	database, err := db.InitDB(*dataDir)

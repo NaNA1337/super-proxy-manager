@@ -18,7 +18,7 @@
 
 - `Connection refused`：先检查核心日志、60000 监听和地址是否正确。
 - `401`：未提供 Token；`403`：Token 错误。用核心当前配置或环境变量覆盖值。
-- 私网被拒绝：同机/内网场景在 Manager 进程设置 `ALLOW_PRIVATE_HOSTS=true` 后重启。
+- 私网被拒绝：同机/内网场景使用 `-allow-private-hosts` 启动 Manager；旧的 `ALLOW_PRIVATE_HOSTS=true` 环境变量仍兼容。
 - 指纹不匹配：核实核心是否更换证书，确认后更新。不要直接把校验关闭。
 
 ## 4. 检查出口状态

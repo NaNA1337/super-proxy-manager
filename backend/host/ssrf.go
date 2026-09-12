@@ -11,8 +11,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+var privateHostsAllowed atomic.Bool
 
 var (
 	// Blocked IPv4 CIDR ranges
@@ -28,8 +31,8 @@ var (
 
 	// Blocked IPv6 CIDR ranges
 	blockedIPv6CIDRs = []string{
-		"::1/128",  // IPv6 loopback
-		"fc00::/7", // IPv6 unique local (ULA)
+		"::1/128",   // IPv6 loopback
+		"fc00::/7",  // IPv6 unique local (ULA)
 		"fe80::/10", // IPv6 link-local
 	}
 
@@ -66,9 +69,15 @@ func init() {
 	}
 }
 
-// IsPrivateHostsAllowed checks if environment allows private/loopback hosts (used in test suites)
+// SetPrivateHostsAllowed configures whether private/loopback Agent targets are allowed.
+// The Manager command uses this for the -allow-private-hosts flag.
+func SetPrivateHostsAllowed(allowed bool) {
+	privateHostsAllowed.Store(allowed)
+}
+
+// IsPrivateHostsAllowed checks the command policy and backward-compatible environment settings.
 func IsPrivateHostsAllowed() bool {
-	return os.Getenv("ALLOW_PRIVATE_HOSTS") == "true" || os.Getenv("SPM_ALLOW_PRIVATE_HOSTS") == "true"
+	return privateHostsAllowed.Load() || os.Getenv("ALLOW_PRIVATE_HOSTS") == "true" || os.Getenv("SPM_ALLOW_PRIVATE_HOSTS") == "true"
 }
 
 // NormalizeIP unmaps IPv4-mapped IPv6 addresses to pure IPv4

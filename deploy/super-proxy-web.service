@@ -8,6 +8,7 @@ Type=simple
 User=root
 WorkingDirectory=/var/lib/super-proxy-manager
 ExecStart=/usr/local/bin/super-proxy-web -host 127.0.0.1 -port 8443 -data-dir /var/lib/super-proxy-manager/data
+# For loopback/private Agent URLs, append: -allow-private-hosts
 Restart=always
 RestartSec=5s
 
@@ -22,6 +23,8 @@ PrivateTmp=true
 # Environment="PORT=8443"
 # Environment="DATA_DIR=/var/lib/super-proxy-manager/data"
 # Environment="MANAGER_MASTER_KEY=your-32-byte-hex-aes-gcm-master-key"
+# ALLOW_PRIVATE_HOSTS=true remains supported for backward compatibility;
+# prefer the -allow-private-hosts command argument.
 
 [Install]
 WantedBy=multi-user.target

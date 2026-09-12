@@ -8,7 +8,7 @@ Super-Proxy Manager 是 [Super-Proxy](https://github.com/NaNA1337/super-proxy) �
                           Xray + OpenVPN + 策略路由
 ```
 
-Manager 只提供管理界面，不运行 Xray 或 OpenVPN。当前稳定版为 [v1.0.1](https://github.com/NaNA1337/super-proxy-manager/releases/tag/v1.0.1)，与 Super-Proxy Core v1.1.3 联调通过。
+Manager 只提供管理界面，不运行 Xray 或 OpenVPN。当前稳定版为 [v1.0.2](https://github.com/NaNA1337/super-proxy-manager/releases/tag/v1.0.2)，与 Super-Proxy Core v1.1.3 联调通过。
 
 ## 最快安装
 
@@ -35,7 +35,7 @@ sudo apt-get install -y ca-certificates wget coreutils grep sed
 下面的命令会自动识别 `amd64` 或 `arm64`，校验 SHA-256，然后把程序安装为 `/usr/local/bin/super-proxy-web`：
 
 ```bash
-VERSION=1.0.1
+VERSION=1.0.2
 ARCH="$(dpkg --print-architecture)"
 case "$ARCH" in amd64|arm64) ;; *) echo "不支持的架构: $ARCH"; exit 1 ;; esac
 
@@ -53,12 +53,34 @@ sudo install -m 755 "super-proxy-web-linux-${ARCH}" /usr/local/bin/super-proxy-w
 super-proxy-web -version
 ```
 
-预期版本输出包含 `super-proxy-manager 1.0.1`。
+预期版本输出包含 `super-proxy-manager 1.0.2`。
 
-### 3. 安装 systemd 服务
+### 3. 直接用命令参数启动
+
+Manager 不需要 YAML、JSON 等配置文件。监听地址、端口和数据目录都可以直接作为命令参数传入：
 
 ```bash
-VERSION=1.0.1
+sudo install -d -m 700 /var/lib/super-proxy-manager/data
+sudo /usr/local/bin/super-proxy-web \
+  -host 127.0.0.1 \
+  -port 8443 \
+  -data-dir /var/lib/super-proxy-manager/data
+```
+
+公网 Agent 地址默认就能添加。需要管理同机或内网核心时，在命令末尾增加：
+
+```text
+-allow-private-hosts
+```
+
+该参数允许 `127.0.0.1`、`10.x`、`172.16-31.x`、`192.168.x` 等 Agent 地址；云厂商元数据和 link-local 地址仍会被拦截。
+
+前台确认运行正常后按 `Ctrl+C` 停止，再按下一步安装成 systemd 服务。Manager Web 需要直接监听服务器网卡时，把 `-host` 改为 `0.0.0.0`；8443 仍是 HTTP，应放在 HTTPS 反向代理后面。
+
+### 4. 安装 systemd 服务
+
+```bash
+VERSION=1.0.2
 wget -O /tmp/super-proxy-web.service \
   "https://raw.githubusercontent.com/NaNA1337/super-proxy-manager/v${VERSION}/deploy/super-proxy-web.service"
 
@@ -68,20 +90,20 @@ sudo install -m 644 /tmp/super-proxy-web.service /etc/systemd/system/super-proxy
 sudo systemctl daemon-reload
 ```
 
-Manager 默认监听 `127.0.0.1:8443`。如果 Manager 需要连接同机的 `127.0.0.1:60000`，或者核心服务器的内网地址，执行：
+systemd 服务默认让 Manager Web 监听 `127.0.0.1:8443`。如果需要连接同机或内网核心，执行：
 
 ```bash
-sudo systemctl edit super-proxy-web
+sudo systemctl edit --full super-proxy-web
 ```
 
-在编辑器中写入并保存：
+在现有 `ExecStart` 命令末尾增加 `-allow-private-hosts`，保存后执行：
 
-```ini
-[Service]
-Environment=ALLOW_PRIVATE_HOSTS=true
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart super-proxy-web
 ```
 
-核心 Agent 使用公网地址时不需要设置这个选项。
+核心 Agent 使用公网地址时不需要修改服务。
 
 启动 Manager：
 
@@ -91,7 +113,7 @@ sudo systemctl status super-proxy-web --no-pager
 sudo journalctl -u super-proxy-web -n 80 --no-pager
 ```
 
-### 4. 首次登录
+### 5. 首次登录
 
 首次启动会在日志中输出唯一的临时密码：
 
@@ -194,7 +216,7 @@ X-Forwarded-Proto: https
 | `-host` | `HOST` | `0.0.0.0` | Web 监听地址；systemd 服务显式使用 `127.0.0.1` |
 | `-port` | `PORT` | `8443` | Web HTTP 端口 |
 | `-data-dir` | `DATA_DIR` | `data` | SQLite 数据库和主密钥目录 |
-| — | `ALLOW_PRIVATE_HOSTS` | `false` | 是否允许 Manager 请求回环或私网 Agent |
+| `-allow-private-hosts` | `ALLOW_PRIVATE_HOSTS` | `false` | 允许 Manager 请求回环或私网 Agent |
 | — | `MANAGER_MASTER_KEY` | 自动生成 | 32 字节主密钥，推荐使用 64 位十六进制字符串 |
 
 查看全部启动参数：
@@ -213,7 +235,7 @@ super-proxy-web -h
 sudo cp -a /var/lib/super-proxy-manager \
   "/var/lib/super-proxy-manager.backup.$(date +%Y%m%d-%H%M%S)"
 
-VERSION=1.0.1
+VERSION=1.0.2
 ARCH="$(dpkg --print-architecture)"
 mkdir -p /tmp/super-proxy-manager-install
 cd /tmp/super-proxy-manager-install

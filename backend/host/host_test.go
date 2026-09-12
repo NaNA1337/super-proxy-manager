@@ -27,6 +27,7 @@ func setupHostTestDB(t *testing.T) (*db.DB, func()) {
 
 func TestSSRFValidation(t *testing.T) {
 	// Ensure strict mode (no private hosts allowed)
+	SetPrivateHostsAllowed(false)
 	_ = os.Unsetenv("ALLOW_PRIVATE_HOSTS")
 	_ = os.Unsetenv("SPM_ALLOW_PRIVATE_HOSTS")
 
@@ -99,6 +100,26 @@ func TestSSRFValidation(t *testing.T) {
 		if err := ValidateAgentURL(u); err == nil {
 			t.Errorf("Expected metadata endpoint %q to be rejected", u)
 		}
+	}
+}
+
+func TestPrivateHostsCommandPolicy(t *testing.T) {
+	SetPrivateHostsAllowed(false)
+	_ = os.Unsetenv("ALLOW_PRIVATE_HOSTS")
+	_ = os.Unsetenv("SPM_ALLOW_PRIVATE_HOSTS")
+	t.Cleanup(func() { SetPrivateHostsAllowed(false) })
+
+	privateURL := "https://10.0.0.10:60000"
+	if err := ValidateAgentURL(privateURL); err == nil {
+		t.Fatal("expected private Agent URL to be rejected before command policy is enabled")
+	}
+
+	SetPrivateHostsAllowed(true)
+	if err := ValidateAgentURL(privateURL); err != nil {
+		t.Fatalf("expected private Agent URL to be allowed by command policy: %v", err)
+	}
+	if err := ValidateAgentURL("http://169.254.169.254/latest/meta-data/"); err == nil {
+		t.Fatal("cloud metadata must remain blocked when private Agent URLs are enabled")
 	}
 }
 
