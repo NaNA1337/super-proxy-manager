@@ -147,13 +147,13 @@ export const Routing: React.FC = () => {
             2. Xray's load balancer rules select an active outbound (<code className="text-amber-300">exit-0</code>, <code className="text-amber-300">exit-1</code>, or <code className="text-amber-300">exit-2</code>).
           </p>
           <p>
-            3. Each outbound applies an SO_MARK: <code className="text-cyan-300">10000 + slot</code> to the socket.
+            3. Each outbound applies an SO_MARK: <code className="text-cyan-300">100 + slot</code> to the socket.
           </p>
           <p>
-            4. Linux kernel matches <code className="text-emerald-300">ip rule from all fwmark 1000X lookup 1000X</code> and forwards the packet into dedicated tun interface <code className="text-emerald-300">tunX</code>.
+            4. Linux kernel matches <code className="text-emerald-300">fwmark 100/101/102</code> to routing table <code className="text-emerald-300">100/101/102</code> and forwards the packet through the interface reported for that active slot (for example <code className="text-emerald-300">tun16</code>).
           </p>
           <p>
-            5. During a manual or failover switch, the old tunnel is dynamically reassigned to draining table <code className="text-amber-300">2000X</code> while new connections immediately route to the new tunnel.
+            5. During a manual or failover switch, the old tunnel is assigned to draining table <code className="text-amber-300">200 + slot</code> while new connections immediately route to the replacement.
           </p>
         </div>
       </div>

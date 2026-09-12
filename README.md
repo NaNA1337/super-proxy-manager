@@ -4,7 +4,7 @@
 
 核心负责 OpenVPN、Xray 和 Linux 路由。Manager 本身不建立 VPN。浏览器只访问 Manager，由 Manager 携带加密存储的 Agent Token 请求核心。
 
-本轮以 Manager `9864745` 和核心 `755b1b7` 为基准完成兼容修复。真实联调入口见 [联调教程](docs/tutorial.md)，检查记录见核心仓库 [可用性报告](../super-proxy/docs/usability-report.md)。
+当前版本已与核心 v1.1.2 及其后续修复联调。真实联调入口见 [联调教程](docs/tutorial.md)，检查记录见核心仓库 [可用性报告](../super-proxy/docs/usability-report.md)。
 
 ## 源码构建和首次启动
 
