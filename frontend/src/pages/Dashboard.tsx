@@ -107,6 +107,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   const isAllHosts = selectedHostID === 'all';
   const totalSlots = slotsData?.total_configured || 3;
+  const activeExits = exits.filter((exit) => exit.status === 'ACTIVE');
+  const aggregateCapacity = activeExits.reduce((sum, exit) => sum + (exit.throughput || 0), 0);
   const slotCards = [];
   for (let i = 0; i < totalSlots; i++) {
     const exit = exits.find((e) => e.slot === i);
@@ -235,6 +237,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </button>
         </div>
 
+        <div className="p-4 rounded-xl bg-emerald-950/30 border border-emerald-700/40 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 font-mono">
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-emerald-300">Measured Multi-Connection Capacity</div>
+            <div className="text-2xl font-bold text-white mt-1">{formatSpeed(aggregateCapacity)}</div>
+          </div>
+          <p className="text-[11px] text-slate-400 max-w-xl">
+            Sum of active-slot admission tests. Independent connections are round-robin distributed; one TCP connection stays on one tunnel.
+          </p>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {slotCards.map(({ slot, exit, isOverridden }) => {
             const hasNode = exit && exit.node_id;
@@ -268,7 +280,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         <span className="text-slate-200">{exit.country || 'Global'}</span>
                       </div>
                       <div className="flex justify-between items-center py-1 border-b border-slate-800/60">
-                        <span className="text-slate-500">Speed / Cap:</span>
+                        <span className="text-slate-500">Single-Tunnel Test:</span>
                         <span className="text-emerald-400 font-bold">{formatSpeed(exit.throughput)}</span>
                       </div>
                       <div className="flex justify-between items-center py-1 border-b border-slate-800/60">

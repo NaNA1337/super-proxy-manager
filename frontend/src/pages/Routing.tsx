@@ -144,7 +144,7 @@ export const Routing: React.FC = () => {
             1. Client traffic enters Xray via <strong className="text-cyan-300">proxy (SOCKS/VLESS)</strong>.
           </p>
           <p>
-            2. Xray's load balancer rules select an active outbound (<code className="text-amber-300">exit-0</code>, <code className="text-amber-300">exit-1</code>, or <code className="text-amber-300">exit-2</code>).
+            2. Each new connection is round-robin assigned to an active outbound (<code className="text-amber-300">exit-0</code>, <code className="text-amber-300">exit-1</code>, or <code className="text-amber-300">exit-2</code>); an established connection keeps its chosen exit.
           </p>
           <p>
             3. Each outbound applies an SO_MARK: <code className="text-cyan-300">100 + slot</code> to the socket.

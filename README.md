@@ -10,7 +10,9 @@ Super-Proxy Manager 是 [Super-Proxy Core](https://github.com/NaNA1337/super-pro
 
 Manager 负责主机管理、出口状态、手动切换、指标查看和客户端配置导出。它不运行 Xray、OpenVPN，也不需要应用配置文件。
 
-当前版本：[v1.0.4](https://github.com/NaNA1337/super-proxy-manager/releases/tag/v1.0.4)
+当前版本：[v1.0.5](https://github.com/NaNA1337/super-proxy-manager/releases/tag/v1.0.5)
+
+Dashboard 的 `Measured Multi-Connection Capacity` 是所有活动槽位独立测速值之和。Core 会把独立的新连接按轮询顺序分到三个出口；单个 TCP 连接保持一个出口，因此单任务测速仍受单条 TUN 限制。
 
 ## 快速安装
 
@@ -26,7 +28,7 @@ sudo apt-get install -y ca-certificates wget
 下载、校验并安装到 `/usr/local/bin`：
 
 ```bash
-VERSION=1.0.4
+VERSION=1.0.5
 ARCH="$(dpkg --print-architecture)"
 case "$ARCH" in
   amd64|arm64) ;;
@@ -50,7 +52,7 @@ super-proxy-web -version
 正确输出应包含：
 
 ```text
-super-proxy-manager 1.0.4
+super-proxy-manager 1.0.5
 ```
 
 ## 直接启动
@@ -136,7 +138,7 @@ sudo openssl x509 \
 下载并安装仓库自带的服务文件：
 
 ```bash
-VERSION=1.0.4
+VERSION=1.0.5
 wget -O /tmp/super-proxy-web.service \
   "https://raw.githubusercontent.com/NaNA1337/super-proxy-manager/v${VERSION}/deploy/super-proxy-web.service"
 
@@ -242,7 +244,7 @@ super-proxy-web -version
 下载发布版自带的卸载脚本：
 
 ```bash
-VERSION=1.0.4
+VERSION=1.0.5
 wget -O /tmp/super-proxy-manager-uninstall.sh \
   "https://github.com/NaNA1337/super-proxy-manager/releases/download/v${VERSION}/uninstall.sh"
 sudo bash /tmp/super-proxy-manager-uninstall.sh
