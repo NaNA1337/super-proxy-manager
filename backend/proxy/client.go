@@ -299,6 +299,30 @@ func (c *DaemonClient) GetPoolQualified() ([]map[string]interface{}, error) {
 	return res, nil
 }
 
+func (c *DaemonClient) GetDiscoveryRefresh() (map[string]interface{}, int, error) {
+	data, code, err := c.doRequest(http.MethodGet, "/api/v1/discovery/refresh", nil)
+	if err != nil {
+		return nil, code, err
+	}
+	var res map[string]interface{}
+	if err := json.Unmarshal(data, &res); err != nil {
+		return map[string]interface{}{"raw": string(data)}, code, nil
+	}
+	return res, code, nil
+}
+
+func (c *DaemonClient) TriggerDiscoveryRefresh() (map[string]interface{}, int, error) {
+	data, code, err := c.doRequest(http.MethodPost, "/api/v1/discovery/refresh", map[string]string{})
+	if err != nil {
+		return nil, code, err
+	}
+	var res map[string]interface{}
+	if err := json.Unmarshal(data, &res); err != nil {
+		return map[string]interface{}{"raw": string(data)}, code, nil
+	}
+	return res, code, nil
+}
+
 func (c *DaemonClient) GetNodes(country, status, search string, limit, offset int) (map[string]interface{}, error) {
 	params := url.Values{}
 	if country != "" {

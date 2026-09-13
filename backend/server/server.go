@@ -97,6 +97,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/daemon/metrics", s.requireAuthHandler(s.handleDaemonMetrics))
 	s.mux.HandleFunc("/api/daemon/routing", s.requireAuthHandler(s.handleDaemonRouting))
 	s.mux.HandleFunc("/api/daemon/operations/", s.requireAuthHandler(s.handleDaemonOperation))
+	s.mux.HandleFunc("/api/daemon/discovery/refresh", s.requireAdminHandler(s.handleDaemonDiscoveryRefresh))
 
 	// Slot switch (Restricted to admin + CSRF enforced + requires specific host)
 	s.mux.HandleFunc("/api/daemon/slots/", s.requireAdminHandler(s.handleDaemonSlotAction))
@@ -333,7 +334,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	audit.GlobalLogger.Log(sess.Username, string(sess.Role), "change_password", "user_credentials", "SUCCESS", auth.GetClientIP(r), "password updated successfully")
 
 	auth.SendJSON(w, http.StatusOK, map[string]interface{}{
-		"status":                "password_changed",
+		"status":               "password_changed",
 		"must_change_password": false,
 		"csrf_token":           newSess.CSRFToken,
 		"expires_at":           newSess.ExpiresAt,
@@ -922,6 +923,39 @@ func (s *Server) handleDaemonPoolQualified(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	auth.SendJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleDaemonDiscoveryRefresh(w http.ResponseWriter, r *http.Request) {
+	mode, client, err := s.resolveTargetHost(r)
+	if err != nil || mode == "all" {
+		auth.SendJSON(w, http.StatusBadRequest, map[string]string{"error": "select a specific target host before pulling nodes"})
+		return
+	}
+
+	var res map[string]interface{}
+	var code int
+	switch r.Method {
+	case http.MethodGet:
+		res, code, err = client.GetDiscoveryRefresh()
+	case http.MethodPost:
+		res, code, err = client.TriggerDiscoveryRefresh()
+	default:
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err != nil {
+		auth.SendJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	if code < 200 || code >= 300 {
+		auth.SendJSON(w, code, res)
+		return
+	}
+	if r.Method == http.MethodPost {
+		sess := r.Context().Value(auth.SessionContextKey).(*auth.Session)
+		audit.GlobalLogger.Log(sess.Username, string(sess.Role), "pull_nodes", "discovery-refresh", "SUCCESS", auth.GetClientIP(r), "")
+	}
+	auth.SendJSON(w, code, res)
 }
 
 func (s *Server) handleDaemonNodes(w http.ResponseWriter, r *http.Request) {

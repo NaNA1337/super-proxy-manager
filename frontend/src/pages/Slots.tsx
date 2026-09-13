@@ -11,7 +11,7 @@ import {
   Clock,
   Search
 } from 'lucide-react';
-import { SlotsOverview, CurrentExit, Node, Operation } from '../types';
+import { SlotsOverview, CurrentExit, Node, Operation, DiscoveryRefreshStatus } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { api } from '../api/client';
 
@@ -31,9 +31,12 @@ export const Slots: React.FC<SlotsProps> = ({ isAdmin }) => {
   const [switchLoading, setSwitchLoading] = useState(false);
   const [switchError, setSwitchError] = useState('');
   const [activeOp, setActiveOp] = useState<Operation | null>(null);
-	const [candidateSearch, setCandidateSearch] = useState('');
-	const [candidateASN, setCandidateASN] = useState('');
-	const [candidateType, setCandidateType] = useState('');
+  const [candidateSearch, setCandidateSearch] = useState('');
+  const [candidateASN, setCandidateASN] = useState('');
+  const [candidateType, setCandidateType] = useState('');
+  const [discoveryStatus, setDiscoveryStatus] = useState<DiscoveryRefreshStatus | null>(null);
+  const [pullingNodes, setPullingNodes] = useState(false);
+  const [pullError, setPullError] = useState('');
 
   const fetchSlotsData = async () => {
     try {
@@ -45,10 +48,28 @@ export const Slots: React.FC<SlotsProps> = ({ isAdmin }) => {
       setSlotsOverview(slotsRes);
       setExits(exitsRes);
       setQualifiedNodes(qualifiedRes);
+      if (isAdmin) {
+        const refresh = await api.getDiscoveryRefresh().catch(() => null);
+        if (refresh) setDiscoveryStatus(refresh.status);
+      }
     } catch (e) {
       console.error('Failed to fetch slots data', e);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePullNodes = async () => {
+    setPullingNodes(true);
+    setPullError('');
+    try {
+      const response = await api.triggerDiscoveryRefresh();
+      setDiscoveryStatus(response.status);
+      await fetchSlotsData();
+    } catch (err: unknown) {
+      setPullError(err instanceof Error ? err.message : 'Failed to pull nodes');
+    } finally {
+      setPullingNodes(false);
     }
   };
 
@@ -116,18 +137,18 @@ export const Slots: React.FC<SlotsProps> = ({ isAdmin }) => {
   };
 
   const totalSlots = slotsOverview?.total_configured || 3;
-	const candidateASNs = Array.from(new Set(qualifiedNodes.map((node) => node.network_class?.asn).filter(Boolean) as string[])).sort();
-	const candidateTypes = Array.from(new Set(qualifiedNodes.map((node) => node.network_class?.network_type).filter(Boolean) as string[])).sort();
-	const normalizedSearch = candidateSearch.trim().toLowerCase();
-	const filteredCandidates = qualifiedNodes
-		.filter((node) => {
-			const network = node.network_class;
-			const matchesSearch = !normalizedSearch || [node.ip, node.hostname, network?.asn, network?.isp, network?.organization]
-				.some((value) => value?.toLowerCase().includes(normalizedSearch));
-			return matchesSearch && (!candidateASN || network?.asn === candidateASN) &&
-				(!candidateType || network?.network_type === candidateType);
-		})
-		.sort((a, b) => b.score - a.score);
+  const candidateASNs = Array.from(new Set(qualifiedNodes.map((node) => node.network_class?.asn).filter(Boolean) as string[])).sort();
+  const candidateTypes = Array.from(new Set(qualifiedNodes.map((node) => node.network_class?.network_type).filter(Boolean) as string[])).sort();
+  const normalizedSearch = candidateSearch.trim().toLowerCase();
+  const filteredCandidates = qualifiedNodes
+    .filter((node) => {
+      const network = node.network_class;
+      const matchesSearch = !normalizedSearch || [node.ip, node.hostname, network?.asn, network?.isp, network?.organization]
+        .some((value) => value?.toLowerCase().includes(normalizedSearch));
+      return matchesSearch && (!candidateASN || network?.asn === candidateASN) &&
+        (!candidateType || network?.network_type === candidateType);
+    })
+    .sort((a, b) => b.score - a.score);
   const slotList = [];
   for (let i = 0; i < totalSlots; i++) {
     const exit = exits.find((e) => e.slot === i);
@@ -148,14 +169,38 @@ export const Slots: React.FC<SlotsProps> = ({ isAdmin }) => {
             Dedicated Linux policy routing tunnels, atomic generation leases, and graceful draining state machines
           </p>
         </div>
-        <button
-          onClick={fetchSlotsData}
-          className="flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-xs rounded-lg transition"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-cyan-400' : ''}`} />
-          <span>Refresh</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              onClick={handlePullNodes}
+              disabled={pullingNodes || discoveryStatus?.running}
+              className="flex items-center gap-1.5 px-3 py-2 bg-cyan-700 hover:bg-cyan-600 text-white font-mono text-xs rounded-lg transition disabled:opacity-40"
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>{discoveryStatus?.running ? 'Pulling & Vetting…' : 'Pull Nodes & Fill Slots'}</span>
+            </button>
+          )}
+          <button
+            onClick={fetchSlotsData}
+            className="flex items-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-mono text-xs rounded-lg transition"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-cyan-400' : ''}`} />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
+
+      {(discoveryStatus || pullError) && (
+        <div className={`p-3 rounded-xl border font-mono text-xs ${pullError || discoveryStatus?.last_error
+          ? 'bg-rose-950/40 border-rose-800 text-rose-200'
+          : discoveryStatus?.running
+          ? 'bg-blue-950/40 border-blue-700 text-blue-200'
+          : 'bg-emerald-950/30 border-emerald-800 text-emerald-200'}`}>
+          {pullError || discoveryStatus?.last_error || (discoveryStatus?.running
+            ? 'Fetching VPN Gate nodes, checking ASN and reputation, then filling empty slots…'
+            : `Last pull: ${discoveryStatus?.last_result.fetched || 0} fetched, ${discoveryStatus?.last_result.accepted || 0} accepted, ${discoveryStatus?.last_result.rejected || 0} rejected.`)}
+        </div>
+      )}
 
       {/* Operation Progress Toast / Banner */}
       {activeOp && (

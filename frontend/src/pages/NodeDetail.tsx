@@ -129,14 +129,6 @@ export const NodeDetail: React.FC<NodeDetailProps> = ({ nodeId, onClose, onSelec
       negative.push({ label: 'Tor Exit Detected', score: 'REJECT', note: 'Tor exits are prohibited by admission policy' });
     }
 
-    if (n.fail_count > 0) {
-      negative.push({
-        label: 'Historical Connection Failures',
-        score: `-${n.fail_count * 30}`,
-        note: `${n.fail_count} prior tunnel connection drop(s)`,
-      });
-    }
-
     return { positive, negative };
   };
 

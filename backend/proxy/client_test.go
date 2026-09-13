@@ -110,6 +110,33 @@ func TestGetAllClientConfigCanonical(t *testing.T) {
 	}
 }
 
+func TestDiscoveryRefreshControl(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/discovery/refresh" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Fatalf("missing daemon authorization header")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"started": r.Method == http.MethodPost,
+			"status":  map[string]interface{}{"running": r.Method == http.MethodPost},
+		})
+	}))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, "test-token")
+	getResult, code, err := client.GetDiscoveryRefresh()
+	if err != nil || code != http.StatusOK || getResult["started"] != false {
+		t.Fatalf("unexpected GET result code=%d result=%v err=%v", code, getResult, err)
+	}
+	postResult, code, err := client.TriggerDiscoveryRefresh()
+	if err != nil || code != http.StatusOK || postResult["started"] != true {
+		t.Fatalf("unexpected POST result code=%d result=%v err=%v", code, postResult, err)
+	}
+}
+
 func TestNoFakeFallbackOnDaemonFailure(t *testing.T) {
 	// A server that returns 500 internal server error
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

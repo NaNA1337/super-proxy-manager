@@ -133,7 +133,25 @@ export interface PoolSummary {
   candidate: number;
   cooldown: number;
   rejected: number;
-	  pending_review?: number;
+  pending_review?: number;
+}
+
+export interface DiscoveryRefreshStatus {
+  running: boolean;
+  source?: string;
+  last_started?: string;
+  last_completed?: string;
+  last_error?: string;
+  last_result: {
+    fetched: number;
+    accepted: number;
+    rejected: number;
+  };
+}
+
+export interface DiscoveryRefreshResponse {
+  started: boolean;
+  status: DiscoveryRefreshStatus;
 }
 
 export interface ReputationMetrics {
@@ -190,8 +208,8 @@ export interface Node {
   last_seen: string;
   first_seen: string;
   fail_count: number;
-	  last_error?: string;
-	  last_failure_at?: string;
+  last_error?: string;
+  last_failure_at?: string;
   reputation: ReputationMetrics;
   network_class: NetworkClass;
   performance: PerformanceMetrics;

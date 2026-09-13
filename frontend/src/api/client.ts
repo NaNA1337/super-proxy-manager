@@ -7,6 +7,7 @@ import {
   PoolSummary,
   Node,
   Operation,
+  DiscoveryRefreshResponse,
   ShareLinkResult,
   Subscription,
   CreateSubResponse,
@@ -198,6 +199,7 @@ export const api = {
   getNodeDetails: (id: string) => request<Node>(`/api/daemon/nodes/${encodeURIComponent(id)}`),
   getMetricsText: () => request<string>('/api/daemon/metrics'),
   getRouting: () => request<RoutingOverview>('/api/daemon/routing'),
+  getDiscoveryRefresh: () => request<DiscoveryRefreshResponse>('/api/daemon/discovery/refresh'),
 
   // Mutations (Admin)
   switchSlot: (slot: number, nodeID: string) =>
@@ -206,6 +208,10 @@ export const api = {
       body: JSON.stringify({ node_id: nodeID }),
     }),
   getOperation: (opID: string) => request<Operation>(`/api/daemon/operations/${encodeURIComponent(opID)}`),
+  triggerDiscoveryRefresh: () => request<DiscoveryRefreshResponse>('/api/daemon/discovery/refresh', {
+    method: 'POST',
+    body: '{}',
+  }),
 
   // ShareLinks
   getShareProtocols: () => request<{ supported: string[]; all: string[] }>('/api/sharelinks/protocols'),
